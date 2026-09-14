@@ -156,10 +156,36 @@ class DragTrackDensity:
         rho_realtime: Mapping[str, Any],
         clim: _Clim | None = None,
         j70: J70 | None = None,
+        spatial_map: Mapping[str, Any] | None = None,
+        spatial_map_fn=None,
     ) -> None:
+        """
+        Optional spatial-map overrides (choose ONE; if both are None the
+        analytical Fourier clim is used):
+
+        spatial_map : dict
+            2D static grid — keys: ``lat_deg`` (n_lat,), ``lst_h`` (n_lst,),
+            ``factor`` (n_lat, n_lst) dimensionless multiplier so that
+            ``rho_400 = rho_bg * factor(lat, lst)``.
+            OR 3D time-varying — same keys plus ``time_utc`` (n_t,) and
+            ``factor`` shape (n_t, n_lat, n_lst).
+        spatial_map_fn : callable
+            ``fn(t, lat_deg, lst_h) -> factor`` returning per-obs
+            multiplier. Broadcast expected.
+        """
         self.j70 = j70 or J70()
         self.clim = clim or _Clim()
         self._raw = dict(rho_realtime)  # shallow copy
+        self._smap = None
+        self._smap_fn = None
+        if spatial_map is not None and spatial_map_fn is not None:
+            raise ValueError("provide spatial_map OR spatial_map_fn, not both")
+        if spatial_map is not None:
+            self._smap = self._prepare_spatial_map(spatial_map)
+        elif spatial_map_fn is not None:
+            if not callable(spatial_map_fn):
+                raise TypeError("spatial_map_fn must be callable")
+            self._smap_fn = spatial_map_fn
 
         if 'solver' not in rho_realtime:
             raise KeyError("rho_realtime JSON has no 'solver' block")
@@ -215,6 +241,84 @@ class DragTrackDensity:
                 self._nan_fills = getattr(self, '_nan_fills', {})
                 self._nan_fills[name] = n_bad
 
+    # ── Spatial-map override ──────────────────────────────────────────
+
+    @staticmethod
+    def _prepare_spatial_map(sm: Mapping[str, Any]) -> dict:
+        """Validate + normalise a user spatial_map dict.  Returns a
+        canonical form with keys ``lat``, ``lst``, ``factor``, and
+        (if time-varying) ``t_days``.
+        """
+        lat = np.asarray(sm['lat_deg'], float).ravel()
+        lst = np.asarray(sm['lst_h'],   float).ravel()
+        fac = np.asarray(sm['factor'],  float)
+        if not (np.all(np.diff(lat) > 0) and np.all(np.diff(lst) > 0)):
+            raise ValueError("spatial_map lat_deg and lst_h must be strictly ascending")
+        if fac.ndim == 2:
+            if fac.shape != (lat.size, lst.size):
+                raise ValueError(
+                    f"spatial_map factor shape {fac.shape} != "
+                    f"(lat={lat.size}, lst={lst.size})")
+            return dict(kind='2d', lat=lat, lst=lst, factor=fac)
+        if fac.ndim == 3:
+            if 'time_utc' not in sm:
+                raise KeyError("3D spatial_map factor needs 'time_utc' array")
+            t = np.array([_to_days(x) for x in sm['time_utc']], float)
+            if fac.shape != (t.size, lat.size, lst.size):
+                raise ValueError(
+                    f"spatial_map factor shape {fac.shape} != "
+                    f"(t={t.size}, lat={lat.size}, lst={lst.size})")
+            if not np.all(np.diff(t) > 0):
+                raise ValueError("spatial_map time_utc must be strictly ascending")
+            return dict(kind='3d', t_days=t, lat=lat, lst=lst, factor=fac)
+        raise ValueError(f"spatial_map factor must be 2D or 3D (got ndim={fac.ndim})")
+
+    @staticmethod
+    def _bilinear_2d(grid: np.ndarray, xs: np.ndarray, ys: np.ndarray,
+                     x_q: np.ndarray, y_q: np.ndarray) -> np.ndarray:
+        """Bilinear interp of `grid[len(xs), len(ys)]` at query points."""
+        ix = np.clip(np.searchsorted(xs, x_q, side='right') - 1, 0, len(xs) - 2)
+        iy = np.clip(np.searchsorted(ys, y_q, side='right') - 1, 0, len(ys) - 2)
+        fx = (x_q - xs[ix]) / (xs[ix + 1] - xs[ix])
+        fy = (y_q - ys[iy]) / (ys[iy + 1] - ys[iy])
+        c00 = grid[ix,     iy]
+        c10 = grid[ix + 1, iy]
+        c01 = grid[ix,     iy + 1]
+        c11 = grid[ix + 1, iy + 1]
+        return ((1 - fx) * (1 - fy) * c00 + fx * (1 - fy) * c10
+                + (1 - fx) * fy * c01 + fx * fy * c11)
+
+    def _spatial_factor(self, t_days, lat, lst_h):
+        """Return per-obs multiplicative factor for ρ_400 from override.
+        None → caller should fall back to Fourier clim path.
+        """
+        if self._smap_fn is not None:
+            return np.asarray(self._smap_fn(t_days, lat, lst_h), float).ravel()
+        if self._smap is None:
+            return None
+        sm = self._smap
+        # LST wrap: allow queries at 0..24 mapping onto sorted lst grid.
+        lst_q = np.mod(lst_h, 24.0)
+        lat_q = np.clip(lat, sm['lat'][0], sm['lat'][-1])
+        if sm['kind'] == '2d':
+            return self._bilinear_2d(sm['factor'], sm['lat'], sm['lst'], lat_q, lst_q)
+        # 3D: interp in time first, then bilinear in (lat, lst).
+        t_arr = sm['t_days']
+        it = np.clip(np.searchsorted(t_arr, t_days, side='right') - 1, 0, len(t_arr) - 2)
+        ft = (t_days - t_arr[it]) / (t_arr[it + 1] - t_arr[it])
+        # Vectorised bilinear at both temporal neighbours, then blend.
+        f0 = np.array([
+            self._bilinear_2d(sm['factor'][it[i]], sm['lat'], sm['lst'],
+                              np.atleast_1d(lat_q[i]), np.atleast_1d(lst_q[i]))[0]
+            for i in range(len(t_days))
+        ])
+        f1 = np.array([
+            self._bilinear_2d(sm['factor'][it[i] + 1], sm['lat'], sm['lst'],
+                              np.atleast_1d(lat_q[i]), np.atleast_1d(lst_q[i]))[0]
+            for i in range(len(t_days))
+        ])
+        return (1 - ft) * f0 + ft * f1
+
     # ── Constructors ───────────────────────────────────────────────────
 
     @classmethod
@@ -223,6 +327,8 @@ class DragTrackDensity:
         rho_realtime: PathLike | Mapping[str, Any],
         clim: PathLike | None = None,
         j70_lut: PathLike | None = None,
+        spatial_map: Mapping[str, Any] | None = None,
+        spatial_map_fn=None,
     ) -> "DragTrackDensity":
         """Build from a filesystem path (or already-parsed dict) plus optional overrides."""
         if isinstance(rho_realtime, Mapping):
@@ -232,7 +338,8 @@ class DragTrackDensity:
                 rt = json.load(f)
         c = _Clim(clim) if clim is not None else None
         j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, clim=c, j70=j)
+        return cls(rho_realtime=rt, clim=c, j70=j,
+                   spatial_map=spatial_map, spatial_map_fn=spatial_map_fn)
 
     @classmethod
     def from_url(cls, url: str, **kwargs) -> "DragTrackDensity":
@@ -388,11 +495,14 @@ class DragTrackDensity:
         mt = self._interp(t_days, self._mt)
         bt = self._interp(t_days, self._bt)
 
-        # Spatial fractional perturbation.
-        beta_frac = self.clim.beta_at_doy(doy)  # (N, 15)
-        Y = Y_modes(lat_f, lst_h)               # (N, 15)
-        frac = np.einsum('ij,ij->i', beta_frac, Y)
-        rho_400_pt = np.maximum(rho_bg * (1.0 + frac), 1e-30)
+        # Spatial factor at (t, lat, lst).  User override wins over Fourier clim.
+        factor = self._spatial_factor(t_days, lat_f, lst_h)
+        if factor is None:
+            beta_frac = self.clim.beta_at_doy(doy)  # (N, 15)
+            Y = Y_modes(lat_f, lst_h)               # (N, 15)
+            frac = np.einsum('ij,ij->i', beta_frac, Y)
+            factor = 1.0 + frac
+        rho_400_pt = np.maximum(rho_bg * factor, 1e-30)
 
         # Point Tinf then vertical scaling via J70.
         Tinf_pt = mt * rho_400_pt + bt
