@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include dragtrack/data *.json
+recursive-exclude tests *
+recursive-exclude .claude *
