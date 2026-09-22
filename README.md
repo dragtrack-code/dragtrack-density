@@ -110,21 +110,37 @@ Add `--json` to `rho` for a full record instead of a bare number.
 
 ---
 
-## Reconstruction math
+## Combining the globals with the spatial pattern
 
-Given a query point `(t, lat, lon, alt)` the model computes:
+The JSON gives you two things per timestep:
+
+* a **global background** — the horizontally-averaged density at 400 km
+  (`solver.rho[:, i400]`) and the corresponding global mean thermospheric
+  temperature (`solver.J70_Tinf_K`), plus their `fit`-block extensions
+  toward the present and future;
+* a **spatial pattern** — sixteen coefficients `Tinf_lm[t, k]` that
+  describe how the thermospheric temperature varies over latitude and
+  local solar time as a small fractional perturbation on top of the
+  global background.
+
+Point density at `(t, lat, lon, alt)` is reconstructed as:
 
 ```
 lst_h    = (UT_hours(t) + lon_deg / 15) mod 24
 Y_k      = 16 spherical-harmonic modes evaluated at (lat, lst_h)
-Tinf     = Tinf_bg(t) * (1 + Σ_k Tinf_lm(t, k) * Y_k)
-rho(alt) = K(t) * J70(alt, Tinf)
+Tinf     = Tinf_bg(t) · (1 + Σ_k Tinf_lm(t, k) · Y_k)
+rho(alt) = K(t) · J70(alt, Tinf)
 ```
 
-where the background `Tinf_bg`, the 16 SH coefficients `Tinf_lm`, and
-the amplitude `K` are read from the runtime JSONs (see class docstring
-for the exact fields).  Vertical structure comes from the packaged
-Jacchia-1970 lookup table.
+`K(t)` is a per-timestep amplitude that keeps the sphere-average of the
+reconstructed density at 400 km equal to the global background from the
+JSON — no matter what the spatial pattern does, the sphere mean is
+preserved.  Vertical structure comes from the packaged Jacchia-1970
+lookup table.
+
+`DragTrackDensity.rho(...)` runs all of this for you, but the pieces
+are trivial enough that you can reproduce it in your own code if you
+want.
 
 ---
 
