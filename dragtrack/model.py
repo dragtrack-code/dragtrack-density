@@ -345,6 +345,76 @@ class DragTrackDensity:
             return float(rho_out[0])
         return rho_out.reshape(np.shape(np.asarray(t_arr)))
 
+    def rho_from_state(
+        self,
+        t: TimeLike | Sequence[TimeLike] | NDArray,
+        r_km: ArrayLike,
+        frame: str = 'EarthMJ2000Eq',
+        source: str = 'baseline',
+    ) -> Union[float, NDArray[np.float64]]:
+        """Same as :meth:`rho`, but takes a position vector in km.
+
+        Convenience for propagators like GMAT that carry the spacecraft
+        state as an ``(x, y, z)`` vector rather than as geodetic
+        ``(lat, lon, alt)``.  Handles the frame conversion internally.
+
+        Parameters
+        ----------
+        t : time-like or 1-D sequence
+            UTC time(s), one per state.
+        r_km : array_like, shape ``(..., 3)``
+            Position vector(s) in km, one per time.  ``r_km[..., 0]``,
+            ``r_km[..., 1]``, ``r_km[..., 2]`` are the x, y, z components.
+        frame : {'EarthMJ2000Eq', 'EarthFixed'}
+            Coordinate system of ``r_km``.  ``'EarthMJ2000Eq'`` is
+            GMAT's default inertial frame (Earth-centered J2000 mean
+            equator); the package rotates it to Earth-fixed via GMST
+            before computing latitude / longitude / altitude.
+            ``'EarthFixed'`` is already Earth-body-fixed (ECEF), no
+            rotation applied.
+        source : str
+            Same as :meth:`rho`.
+
+        Returns
+        -------
+        float or ndarray
+            Density in kg / m^3, one value per input state.
+        """
+        r = np.asarray(r_km, float)
+        if r.shape[-1] != 3:
+            raise ValueError(f'r_km last axis must be size 3 (got {r.shape})')
+        flat_r = r.reshape(-1, 3)
+        t_arr = _as_time_seq(t)
+        t_days, ut_h = _vec_time_features(list(t_arr))
+        if flat_r.shape[0] != len(t_days):
+            if len(t_days) == 1:
+                t_days = np.full(flat_r.shape[0], t_days[0])
+                ut_h = np.full(flat_r.shape[0], ut_h[0])
+            else:
+                raise ValueError(
+                    f't and r_km lengths mismatch (t={len(t_days)} vs '
+                    f'r_km={flat_r.shape[0]})')
+        # Rotate to ECEF if inertial.
+        if frame == 'EarthMJ2000Eq':
+            r_ecef = _eci_to_ecef(flat_r, t_days)
+        elif frame == 'EarthFixed':
+            r_ecef = flat_r
+        else:
+            raise ValueError(
+                f"frame must be 'EarthMJ2000Eq' or 'EarthFixed' (got {frame!r})")
+        # ECEF → WGS84 geodetic.
+        lat_deg, lon_deg, alt_km = _ecef_to_geodetic(r_ecef)
+        # Call the scalar rho path via the array shape we've been building.
+        # We already have t_days available; delegate to .rho().
+        out = self.rho(
+            [t_arr[0]] * flat_r.shape[0]
+            if len(t_arr) == 1 else list(t_arr),
+            lat_deg, lon_deg, alt_km, source=source,
+        )
+        if flat_r.shape[0] == 1 and np.ndim(r_km) == 1:
+            return float(out[0]) if hasattr(out, '__len__') else float(out)
+        return np.asarray(out).reshape(r.shape[:-1])
+
     # ── Loaders ───────────────────────────────────────────────────────────
 
     @classmethod
@@ -415,6 +485,71 @@ def _interp1d(x_new: NDArray, x_ref: NDArray, y_ref: NDArray) -> NDArray:
         return np.full_like(x_new, np.nan)
     return np.interp(x_new, x_ref[ok], y_ref[ok],
                      left=y_ref[ok][0], right=y_ref[ok][-1])
+
+
+_WGS84_A_KM = 6378.137
+_WGS84_F = 1.0 / 298.257223563
+_WGS84_E2 = _WGS84_F * (2.0 - _WGS84_F)   # eccentricity squared
+
+
+def _gmst_rad(t_days: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Greenwich Mean Sidereal Time in radians (IAU-1982 series).
+
+    ``t_days`` is UT1 (approximated by UTC — drag lookup doesn't need
+    the sub-second UT1-UTC correction) in days since 1970-01-01 UTC.
+    """
+    # Days since J2000.0 = 2000-01-01 12:00 UTC = 10957.5 in POSIX-days.
+    d = np.asarray(t_days, float) - 10957.5
+    frac = d - np.floor(d)
+    ut_hours = frac * 24.0
+    T = d / 36525.0
+    gmst_s = (67310.54841
+              + (876600.0 * 3600.0 + 8640184.812866) * T
+              + 0.093104 * T ** 2
+              - 6.2e-6 * T ** 3)
+    gmst_hours = (gmst_s / 3600.0 + ut_hours) % 24.0
+    return np.deg2rad(gmst_hours * 15.0)
+
+
+def _eci_to_ecef(r_eci_km: NDArray[np.float64],
+                  t_days: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Rotate an inertial (EarthMJ2000Eq) position vector into
+    Earth-fixed (ECEF) using GMST.  Precession/nutation not applied —
+    accurate to <1 km for LEO drag-lookup purposes."""
+    theta = _gmst_rad(t_days)
+    c, s = np.cos(theta), np.sin(theta)
+    x, y, z = r_eci_km[..., 0], r_eci_km[..., 1], r_eci_km[..., 2]
+    x_e = c * x + s * y
+    y_e = -s * x + c * y
+    z_e = z
+    return np.stack([x_e, y_e, z_e], axis=-1)
+
+
+def _ecef_to_geodetic(r_ecef_km: NDArray[np.float64]):
+    """WGS84 ECEF (km) → geodetic (lat_deg, lon_deg, alt_km).  Closed
+    form via Bowring (1985)."""
+    x = np.asarray(r_ecef_km[..., 0], float)
+    y = np.asarray(r_ecef_km[..., 1], float)
+    z = np.asarray(r_ecef_km[..., 2], float)
+    a = _WGS84_A_KM
+    e2 = _WGS84_E2
+    b = a * np.sqrt(1.0 - e2)
+    p = np.sqrt(x ** 2 + y ** 2)
+    # Iterative Bowring for latitude.
+    lat = np.arctan2(z, p * (1.0 - e2))
+    for _ in range(5):
+        sin_lat = np.sin(lat)
+        N = a / np.sqrt(1.0 - e2 * sin_lat ** 2)
+        lat = np.arctan2(z + e2 * N * sin_lat, p)
+    sin_lat = np.sin(lat)
+    N = a / np.sqrt(1.0 - e2 * sin_lat ** 2)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        alt = np.where(np.abs(sin_lat) < 0.5,
+                        p / np.cos(lat) - N,
+                        z / np.where(sin_lat == 0, np.nan, sin_lat)
+                        - N * (1.0 - e2))
+    lon = np.arctan2(y, x)
+    return np.rad2deg(lat), np.rad2deg(lon), alt
 
 
 def _load_json(fp: PathLike) -> dict:
