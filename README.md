@@ -66,6 +66,131 @@ rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=alt)
 
 ---
 
+## What's in the JSONs (segments the reader merges)
+
+The reader concatenates three time segments in the following precedence
+(solver wins over fit, fit wins over forecast on ties) and sorts by time:
+
+| Segment    | Where            | Time span                                     | What it is |
+|------------|------------------|-----------------------------------------------|------------|
+| `solver`   | `rho_realtime`   | 2014-01-01 → TLE-edge (~today)                | Reanalysis. Joint fleet inversion `(a_d, T_inf)` daily + 3h subdaily blend.  Shared by every `source`. |
+| `fit`      | `rho_realtime`   | ~27 d back → `max(S_edge, G_edge) + horizon` | Hourly linear regression `rho_zref = a·S(t) + b·G(t) + c` fit against the last 27 d of solver.  Extends past raw-driver edge by 2× LPF RC (S: 48-h RC → +96 h; G: 9-h RC → +18 h) via persist-pad + causal IIR. |
+| `forecast` | `rho_forecast`   | present → +45 d                               | Same fit function, driven with SWPC-predicted S / G (F10.7 → S via local 40-d linear fit; Kp → G via `b + k·exp(Kp/2)` with seeded constants). |
+
+Point queries past the forecast edge fall back to the last-forecast value
+(edge-hold / persistence) — not NaN.  Check `t <= forecast_end` yourself
+if you need to detect out-of-range queries.
+
+## Drivers (S, G)
+
+* `S` — solar-EUV energy input (`W/m²`, 48-h low-pass).  Sourced from the
+  **GOES-19 EUVS composite** (multi-band extreme-UV integration).  Not
+  F10.7 — F10.7 is used only as a linear proxy to drive the SWPC-forecast
+  extension of `S`, not the historical `S` itself.
+* `G` — geomagnetic input (`nT`).  Computed from OMNI solar-wind at L1
+  via the Newell (2007) merging function
+  `dΦ/dt = V^(4/3) · Bt^(2/3) · sin^(8/3)(|θ|/2)`, boxcar-smoothed,
+  mapped to a pseudo-Ap by a ~30-day rolling linear fit against Kp-Ap,
+  then a log-based softplus `λ · log(1 + exp((x − G0) / λ))` with
+  `G0 = 30 nT`, `λ = 20 nT` to smooth the transition through low activity.
+
+Full pipeline / SWPC-conversion detail lives with the data:
+https://huggingface.co/datasets/djgersh/dragtrack-density-data
+
+## Per-satellite BC (`bc_track/<norad>.json`)
+
+Alongside the atmosphere JSONs, the HF dataset ships a ~30-day per-satellite
+BC time series (`Cd·A/m` in m²/kg) for each tracked satellite:
+
+```python
+import json, urllib.request
+BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
+d = json.loads(urllib.request.urlopen(f'{BASE}/bc_track/28485.json').read())    # Swift
+print(d['meta']['satellite'], d['n_records'])
+for r in d['records'][-3:]:
+    print(r['time_utc'], 'BC=', r['BC_m2_kg'],
+                          'rho=', r['rho_kg_m3'], 'vdot=', r['vdot_m_s2'])
+```
+
+Recipe:
+
+    BC = 2 · vdot / (rho_eff · v²)
+
+* `vdot` = Picone drag deceleration from consecutive raw TLE pairs
+  (mean-motion change divided by an F·v³-weighted time integral,
+  `F = (1 - r·ω·cos(inc)/v)²` = co-rotation factor).
+* `rho_eff` = `Σρ·F·v³ / Σ F·v³` sampled at 5-min steps over the same
+  pair interval — matches the vdot averaging kernel so `BC` drops out
+  clean.
+* `v` = pair-mean orbital speed (m/s), consistent with Picone's own
+  `v₀²` factor.
+* Each record includes `state_t1` / `state_t2` (WGS84 geodetic at the
+  bounding TLE epochs) for GMAT coordinate-convention verification.
+
+Quick plot of Swift (28485) BC + drivers over the last month:
+
+```python
+import json, urllib.request, numpy as np
+import matplotlib.pyplot as plt, matplotlib.dates as mdates
+from datetime import datetime
+
+d = json.loads(urllib.request.urlopen(f'{BASE}/bc_track/28485.json').read())
+r = d['records']
+t   = np.array([mdates.date2num(datetime.strptime(x['time_utc'], '%Y-%m-%dT%H:%M:%SZ')) for x in r])
+BC  = np.array([x['BC_m2_kg']  for x in r])
+rho = np.array([x['rho_kg_m3'] for x in r])
+vd  = np.array([x['vdot_m_s2'] for x in r])
+alt = np.array([x['alt_km']    for x in r])
+
+fig, ax = plt.subplots(4, 1, figsize=(11, 8), sharex=True)
+ax[0].plot(t, BC,      'o-'); ax[0].set_ylabel('BC (m^2/kg)')
+ax[0].set_title(f'{d["meta"]["satellite"]["name"]} ({d["meta"]["satellite"]["norad_id"]}) — {d["n_records"]} records')
+ax[1].plot(t, vd*1e6,  'o-'); ax[1].set_ylabel('vdot (µm/s^2)')
+ax[2].semilogy(t, rho, 'o-'); ax[2].set_ylabel('rho (kg/m^3)')
+ax[3].plot(t, alt,     'o-'); ax[3].set_ylabel('alt (km)')
+ax[3].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+fig.autofmt_xdate(); fig.tight_layout(); fig.savefig('swift_bc.png', dpi=120)
+```
+
+## Reading S and G directly
+
+The two drivers live in the `fit` block of `rho_realtime.json` on an hourly
+grid alongside the fit-block density.  Handy for correlating drag events
+against solar / geomagnetic input:
+
+```python
+import json, urllib.request, numpy as np
+import matplotlib.pyplot as plt, matplotlib.dates as mdates
+from datetime import datetime
+
+BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
+rt = json.loads(urllib.request.urlopen(f'{BASE}/rho_realtime.json').read())
+fit = rt['fit']
+t = np.array([mdates.date2num(datetime.strptime(x, '%Y-%m-%dT%H:%M:%SZ')) for x in fit['time_utc']])
+S = np.asarray(fit['S'], float)   # W/m^2, 48-h LPF EUV composite
+G = np.asarray(fit['G'], float)   # nT, softplus'd Newell pseudo-Ap
+
+fig, ax = plt.subplots(2, 1, figsize=(11, 4.5), sharex=True)
+ax[0].plot(t, S, color='C0'); ax[0].set_ylabel('S (W/m^2)')
+ax[1].plot(t, G, color='C3'); ax[1].set_ylabel('G (nT)')
+ax[1].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+fig.autofmt_xdate(); fig.tight_layout(); fig.savefig('drivers.png', dpi=120)
+```
+
+For the future (`rho_forecast.json`), the same keys under its own `fit`
+block give SWPC-driven S / G out to +45 d.
+
+## Scenario Tinf reconstruction
+
+Scenarios re-run the linear fit with a fixed `G`, giving a scenario
+`rho_zref(t)`.  The paired `Tinf_bg(t)` in the JSON is obtained via
+`numpy.polyfit(log10(rho_zref_solver), Tinf_solver, 1)` — a linear-in-Tinf,
+log-in-rho semi-log regression against the solver's own `(rho_zref, Tinf)`
+pairs on the last 27 days.  Robust for baseline; may extrapolate mildly
+outside that cloud for `intense` / `extreme`.
+
+---
+
 ## Scenarios
 
 `m.rho(..., source=name)` picks which flavour of the forecast you want.
@@ -75,7 +200,7 @@ solver reanalysis is the same across all sources.
 | `source` | What it is |
 |---|---|
 | `'baseline'` (default) | Best current estimate driven by observed + SWPC-predicted forcing. |
-| `'solar_only'` | Solar (F10.7) driver only, no geomagnetic activity. |
+| `'solar_only'` | Solar EUV driver (`S`) only, no geomagnetic driver (`G`). |
 | `'quiet'` | Quiet geomagnetic conditions. |
 | `'moderate'` | Moderate geomagnetic activity. |
 | `'intense'` | Intense activity (strong geomagnetic storm). |
@@ -180,6 +305,14 @@ rho = m.rho_from_state('2026-09-13T12:00:00Z', r_km,
 package handles the rotation to Earth-fixed and the WGS84 conversion
 internally.
 
+**Frame caveat.** `EarthMJ2000Eq` is treated as TEME inside the reader —
+only the GMST rotation is applied (no precession / nutation).  For a
+density lookup this is an ECEF position offset of ~50 arcsec at the epoch
+(~1 km at 400 km altitude), well below the atmosphere model's own
+uncertainty (~15-30 % at LEO).  If you need geodetic accuracy better than
+that, pre-transform your ECI state into `EarthFixed` inside GMAT and pass
+`frame='EarthFixed'`.
+
 ### Precomputing a density table for GMAT
 
 The simplest integration: propagate in GMAT with `AtmosphereModel = None`,
@@ -214,6 +347,20 @@ DragTrack's per-satellite BC estimates are in **m²/kg** — the same
 `Cd·A/m` product GMAT's drag model expects.  If your GMAT setup takes
 `Cd`, drag area, and mass separately, distribute the product any way
 you like (e.g. `Cd = 2.2`, `Area/mass = BC / 2.2 m²/kg`).
+
+Per-satellite BC time series (recipe:
+`BC = 2·vdot / (rho_eff · v²)` with `vdot` from Picone TLE-pair drag
+integration and `rho_eff = Σρ·F·v³ / ΣF·v³` at the same F·v³ weighting)
+are shipped alongside the density JSONs under
+`latest/bc_track/<norad>.json` in the HF dataset:
+
+```python
+import json, urllib.request
+BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
+d = json.loads(urllib.request.urlopen(f'{BASE}/bc_track/28485.json').read())
+for r in d['records'][-3:]:
+    print(r['time_utc'], 'BC=', r['BC_m2_kg'])
+```
 
 ### Velocity convention
 
