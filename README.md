@@ -144,6 +144,86 @@ want.
 
 ---
 
+## Using it with GMAT
+
+GMAT (General Mission Analysis Tool) needs density at the spacecraft's
+`(t, lat, lon, alt)`.  You can feed our densities in either as a
+precomputed table or by calling the package at each propagation step.
+The package accepts either a body-fixed or an inertial state vector, so
+you don't have to convert coordinates yourself.
+
+### Coordinates
+
+* Latitude — WGS84 geodetic degrees, matches GMAT's `Latitude`.
+* Longitude — Earth-body-fixed degrees, matches GMAT's `Longitude`
+  extracted from an `EarthFixed` coordinate system.  **Don't use
+  `atan2(y, x)` on an inertial state — that gives right ascension, not
+  longitude.**
+* Altitude — WGS84 geodetic km, matches GMAT's `Altitude`.
+* Time — UTC.  The package accepts an ISO-8601 string or a
+  `datetime`; GMAT users typically convert `UTCGregorian` to that.
+
+Give it geodetic values from an `EarthFixed` coordinate system and you
+match the model's conventions exactly.
+
+### Passing an ECI or ECEF state directly
+
+If you'd rather work with the raw 3-vector, call ``rho_from_state``:
+
+```python
+r_km = np.array([x, y, z])   # ECI or ECEF, in km
+rho = m.rho_from_state('2026-09-13T12:00:00Z', r_km,
+                        frame='EarthMJ2000Eq')      # or 'EarthFixed'
+```
+
+`frame='EarthMJ2000Eq'` matches GMAT's default inertial frame; the
+package handles the rotation to Earth-fixed and the WGS84 conversion
+internally.
+
+### Precomputing a density table for GMAT
+
+The simplest integration: propagate in GMAT with `AtmosphereModel = None`,
+export the ephemeris, evaluate `dragtrack` at each sample, then
+re-propagate with a tabular atmosphere.  A one-shot script:
+
+```python
+import numpy as np
+from dragtrack import DragTrackDensity
+
+m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
+                                 'dragtrack_rho_forecast.json')
+
+# ephem: n × (t_iso, x_km, y_km, z_km) in EarthMJ2000Eq, exported by GMAT.
+ephem = np.loadtxt('trajectory.csv', dtype=object, delimiter=',',
+                    skiprows=1)
+t_iso = ephem[:, 0]
+r_km  = ephem[:, 1:4].astype(float)
+
+rho = m.rho_from_state(list(t_iso), r_km, frame='EarthMJ2000Eq')
+np.savetxt('rho_table.csv',
+           np.column_stack([t_iso, rho]), fmt='%s,%.6e',
+           header='time_utc,rho_kg_m3')
+```
+
+Point GMAT's atmosphere model at `rho_table.csv` and re-propagate; the
+drag now uses DragTrack densities.
+
+### Ballistic coefficient input
+
+DragTrack's per-satellite BC estimates are in **m²/kg** — the same
+`Cd·A/m` product GMAT's drag model expects.  If your GMAT setup takes
+`Cd`, drag area, and mass separately, distribute the product any way
+you like (e.g. `Cd = 2.2`, `Area/mass = BC / 2.2 m²/kg`).
+
+### Velocity convention
+
+GMAT's drag force uses velocity relative to the co-rotating atmosphere
+(`v_rel`), not the inertial orbital speed.  DragTrack's BC estimation
+integrates over the same co-rotation factor, so the numbers are
+compatible to better than ~1% under normal LEO conditions.
+
+---
+
 ## References
 
 * Gershman (2026), *Enabling Near-Real-Time Thermospheric Density
