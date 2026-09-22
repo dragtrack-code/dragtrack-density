@@ -1,34 +1,16 @@
-"""DragTrackDensity — point ``rho`` from JSON products + J70 LUT.
+"""Point atmospheric density from DragTrack JSON products.
 
-Data sources (all JSON)
------------------------
-1. ``dragtrack_spatial_clim_analytical.json`` — static Fourier
-   ``beta_frac(doy)`` climatology, 6 harmonics x 15 SH modes.
-   Packaged with the library.
-2. ``dragtrack_rho_realtime.json`` — runtime product from the
-   DragTrack Ops pipeline; ``solver`` block carries
-   ``time_utc``, ``rho[time, alt_grid]``, ``J70_Tinf_K``,
-   ``T_J70_m``, ``T_J70_b``, ``bin_days``.
-3. Jacchia-70 LUT — packaged gzip-base64 3D grid on
-   ``(z, Tinf, Tx)``.
-
-Reconstruction
---------------
-::
-
-    rho_400(t, lat, lst) = rho_bg(t) * (1 + sum_l beta_l(doy) * Y_l(lat, lst))
-    Tinf(t, lat, lst)    = mt(t) * rho_400 + bt(t)
-    rho(alt)             = rho_400 * J70(alt, Tinf) / J70(400, Tinf)
-
-Where ``lst = UT + lon/15`` (hours, mod 24) and ``doy`` is the day-of-year
-(1..366) of the UTC timestamp.
+Public entry point: :class:`DragTrackDensity` and the constant
+:data:`SCENARIOS`.  See the top-level README for usage and coordinate
+conventions.
 """
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence, Union
+from typing import Any, Iterable, Mapping, Sequence, Tuple, Union
 from urllib.request import urlopen
 
 import numpy as np
@@ -40,24 +22,25 @@ from .j70 import J70
 PathLike = Union[str, Path]
 TimeLike = Union[str, datetime, float, int, np.datetime64]
 
+SCENARIOS: Tuple[str, ...] = (
+    'solar_only', 'quiet', 'moderate', 'intense', 'extreme', 'median',
+)
+
 _EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-# ─── Time helpers ────────────────────────────────────────────────────────
+# ─── Time helpers ─────────────────────────────────────────────────────────
 
 def _parse_time(t: TimeLike) -> datetime:
     """Parse ``t`` into a timezone-aware UTC ``datetime``."""
     if isinstance(t, datetime):
         return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
     if isinstance(t, str):
-        # Accept trailing 'Z' as UTC.
         return datetime.fromisoformat(t.replace('Z', '+00:00'))
     if isinstance(t, np.datetime64):
-        # Convert to POSIX seconds then to aware datetime.
         secs = (t - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')
         return datetime.fromtimestamp(float(secs), tz=timezone.utc)
     if isinstance(t, (float, int, np.floating, np.integer)):
-        # Treat as days since 1970-01-01 UTC (matches _to_days).
         return _EPOCH_UTC + (datetime.fromtimestamp(float(t) * 86400.0,
                                                     tz=timezone.utc) - _EPOCH_UTC)
     raise TypeError(f'Cannot parse time {t!r}')
@@ -65,379 +48,233 @@ def _parse_time(t: TimeLike) -> datetime:
 
 def _to_days(t: TimeLike) -> float:
     """Days since 1970-01-01 UTC (fractional)."""
-    dt = _parse_time(t)
-    return (dt - _EPOCH_UTC).total_seconds() / 86400.0
+    return (_parse_time(t) - _EPOCH_UTC).total_seconds() / 86400.0
 
 
-def _vec_time_features(times: Iterable[TimeLike]):
-    """Return arrays ``(t_days, ut_hours, doy)`` for a sequence of times."""
+def _vec_time_features(times: Iterable[TimeLike]) -> Tuple[NDArray, NDArray]:
+    """Return arrays ``(t_days, ut_hours)`` for a sequence of times."""
     dts = [_parse_time(t) for t in times]
     n = len(dts)
     t_days = np.empty(n, float)
     ut_h = np.empty(n, float)
-    doy = np.empty(n, int)
     for i, d in enumerate(dts):
         t_days[i] = (d - _EPOCH_UTC).total_seconds() / 86400.0
-        ut_h[i] = d.hour + d.minute / 60.0 + d.second / 3600.0 \
-            + d.microsecond / 3.6e9
-        doy[i] = d.timetuple().tm_yday
-    return t_days, ut_h, doy
+        ut_h[i] = d.hour + d.minute / 60.0 + d.second / 3600.0
+    return t_days, ut_h
 
 
-# ─── Climatology ─────────────────────────────────────────────────────────
+# ─── JSON parsing helpers ─────────────────────────────────────────────────
 
-class _Clim:
-    """Static Fourier ``beta_frac(doy)`` reconstruction from the analytical JSON.
-
-    The JSON stores per-mode coefficients ``{a0, a1..aH, b1..bH}`` fitted at
-    fundamental angular frequency ``omega = 2*pi/365.25``.
-    """
-
-    def __init__(self, path: PathLike | None = None):
-        if path is None:
-            path = Path(__file__).parent / 'data' / 'dragtrack_spatial_clim_analytical.json'
-        self.path = Path(path)
-        with open(self.path, 'r') as f:
-            d = json.load(f)
-        self.nh = int(d['basis_definition']['n_harmonics'])
-        self.names = tuple(d['basis_definition']['Y_defs'].keys())
-        self._coefs: Mapping[str, Mapping[str, float]] = d['coefficients']
-        # Pre-pack coefficient tables for fast vectorized eval.
-        # a[k, l] = a_k for mode l ; b[k, l] = b_k for mode l ; a[0] = a0.
-        NM = len(REG_NAMES)
-        self._a = np.zeros((self.nh + 1, NM))
-        self._b = np.zeros((self.nh + 1, NM))
-        for l, name in enumerate(REG_NAMES):
-            if name not in self._coefs:
-                continue
-            c = self._coefs[name]
-            self._a[0, l] = c.get('a0', 0.0)
-            for k in range(1, self.nh + 1):
-                self._a[k, l] = c.get(f'a{k}', 0.0)
-                self._b[k, l] = c.get(f'b{k}', 0.0)
-
-    def beta_at_doy(self, doy: ArrayLike) -> NDArray[np.float64]:
-        """Return ``(N, 15)`` fractional-beta matrix for each DOY value."""
-        doy = np.atleast_1d(np.asarray(doy, float))
-        w = 2.0 * np.pi * (doy - 1) / 365.25            # (N,)
-        # Build cos/sin harmonic stacks (H+1, N) with row 0 = ones for a0.
-        H = self.nh
-        k = np.arange(H + 1)[:, None]                    # (H+1, 1)
-        kw = k * w[None, :]                              # (H+1, N)
-        cosk = np.cos(kw); cosk[0] = 1.0                 # a0 rides on cos row-0
-        sink = np.sin(kw); sink[0] = 0.0
-        # (H+1, N) x (H+1, NM) → (N, NM)
-        return cosk.T @ self._a + sink.T @ self._b
+def _as_2d(v) -> NDArray[np.float64]:
+    """Convert list-of-lists (with ``None`` for NaN) → ``(N, K)`` float array."""
+    if v is None:
+        return np.zeros((0, 0), float)
+    return np.array([[np.nan if x is None else float(x) for x in row]
+                     for row in v], float)
 
 
-# ─── Main model ──────────────────────────────────────────────────────────
+def _as_1d(v) -> NDArray[np.float64]:
+    if v is None:
+        return np.zeros(0, float)
+    return np.array([np.nan if x is None else float(x) for x in v], float)
+
+
+# ─── Internal helpers ────────────────────────────────────────────────────
+
+def _sphere_grid(n_lat: int = 36, n_lst: int = 24):
+    """Canonical (lat, lst) grid + cos-lat area weights for sphere means."""
+    lat_edges = np.linspace(-90.0, 90.0, n_lat + 1)
+    lat_c = 0.5 * (lat_edges[:-1] + lat_edges[1:])
+    lst_edges = np.linspace(0.0, 24.0, n_lst + 1)
+    lst_c = 0.5 * (lst_edges[:-1] + lst_edges[1:])
+    LST_g, LAT_g = np.meshgrid(lst_c, lat_c, indexing='xy')
+    w_lat = np.cos(np.deg2rad(lat_c))
+    w = np.broadcast_to(w_lat[:, None], LAT_g.shape).astype(float)
+    return LAT_g, LST_g, w
+
+
+# ─── Main class ───────────────────────────────────────────────────────────
 
 class DragTrackDensity:
-    """Load DragTrack JSON products and expose ``rho(t, lat, lon, alt)``.
+    """Point atmospheric density ``rho(t, lat, lon, alt)``.
+
+    Construct one of these from a DragTrack realtime JSON (and optionally
+    a forecast JSON), then call :meth:`rho` with any mix of scalar and
+    array-like coordinates.  See the README for coordinate conventions
+    and the list of scenarios.
 
     Parameters
     ----------
     rho_realtime : dict
-        Parsed contents of a ``dragtrack_rho_realtime.json`` file (schema
-        >= 0.8 with ``solver.T_J70_m`` and ``solver.T_J70_b``).
-    clim : :class:`_Clim`, optional
-        Fourier climatology.  Defaults to the packaged asset.
-    j70 : :class:`J70`, optional
-        J70 lookup.  Defaults to the packaged asset.
-
-    See Also
-    --------
-    DragTrackDensity.from_files, DragTrackDensity.from_url
+        Parsed realtime JSON (see :meth:`from_files` / :meth:`from_url`
+        for the convenience loaders that handle file paths and URLs).
+    rho_forecast : dict, optional
+        Parsed forecast JSON.  Extends the reachable time range by up
+        to ~45 days.
+    j70 : J70, optional
+        Preloaded Jacchia-70 lookup table.  Loaded from the packaged
+        asset if omitted.
     """
+
+    SCENARIOS: Tuple[str, ...] = SCENARIOS
 
     def __init__(
         self,
-        *,
         rho_realtime: Mapping[str, Any],
-        clim: _Clim | None = None,
+        rho_forecast: Mapping[str, Any] | None = None,
         j70: J70 | None = None,
-        spatial_map: Mapping[str, Any] | None = None,
-        spatial_map_fn=None,
     ) -> None:
-        """
-        Optional spatial-map overrides (choose ONE; if both are None the
-        analytical Fourier clim is used):
-
-        spatial_map : dict
-            2D static grid — keys: ``lat_deg`` (n_lat,), ``lst_h`` (n_lst,),
-            ``factor`` (n_lat, n_lst) dimensionless multiplier so that
-            ``rho_400 = rho_bg * factor(lat, lst)``.
-            OR 3D time-varying — same keys plus ``time_utc`` (n_t,) and
-            ``factor`` shape (n_t, n_lat, n_lst).
-        spatial_map_fn : callable
-            ``fn(t, lat_deg, lst_h) -> factor`` returning per-obs
-            multiplier. Broadcast expected.
-        """
-        self.j70 = j70 or J70()
-        self.clim = clim or _Clim()
-        self._raw = dict(rho_realtime)  # shallow copy
-        self._smap = None
-        self._smap_fn = None
-        if spatial_map is not None and spatial_map_fn is not None:
-            raise ValueError("provide spatial_map OR spatial_map_fn, not both")
-        if spatial_map is not None:
-            self._smap = self._prepare_spatial_map(spatial_map)
-        elif spatial_map_fn is not None:
-            if not callable(spatial_map_fn):
-                raise TypeError("spatial_map_fn must be callable")
-            self._smap_fn = spatial_map_fn
-
         if 'solver' not in rho_realtime:
-            raise KeyError("rho_realtime JSON has no 'solver' block")
-        blk = rho_realtime['solver']
+            raise KeyError(
+                "This file doesn't look like a DragTrack realtime JSON "
+                "(no 'solver' block).  Get a current file from the "
+                "DragTrack service.")
+        self._meta = dict(rho_realtime.get('meta', {}))
 
         alts = np.asarray(rho_realtime.get('altitude_km', []), float)
         if alts.size == 0:
             raise KeyError("rho_realtime JSON missing 'altitude_km' array")
         i400 = int(np.argmin(np.abs(alts - 400.0)))
         if abs(alts[i400] - 400.0) > 25.0:
-            # 400 km isn't in the altitude grid — bail loudly.
             raise ValueError(
                 f'altitude_km grid does not include 400 km '
-                f'(closest is {alts[i400]} km)'
-            )
+                f'(closest is {alts[i400]} km)')
         self._alt_grid = alts
         self._i400 = i400
+        self.j70 = j70 or J70()
 
-        self._t = np.array([_to_days(t) for t in blk['time_utc']])
-        rho_arr = np.asarray(blk['rho'], float)  # (n_t, n_alt)
-        self._rho400 = rho_arr[:, i400]
-        self._Tinf_bg = np.asarray(blk['J70_Tinf_K'], float)
+        # ── Extract solver block (always the reanalysis) ────────────────
+        sv = rho_realtime['solver']
+        sv_t = np.array([_to_days(t) for t in sv['time_utc']], float)
+        sv_rho400 = _as_2d(sv['rho'])[:, i400]
+        sv_Tinf = _as_1d(sv['J70_Tinf_K'])
+        sv_lm = _as_2d((rho_realtime.get('spatial', {}).get('solver', {})
+                        .get('Tinf_lm')))
+        if sv_lm.shape != (sv_t.size, 16):
+            raise ValueError(
+                "This file doesn't look like a current DragTrack realtime "
+                "JSON — the spatial coefficients are missing or wrong-shaped. "
+                "Try downloading the latest.")
 
-        # mt, bt per bin (linear T_inf = mt * rho_400 + bt).
-        for req in ('T_J70_m', 'T_J70_b'):
-            if req not in blk:
-                raise KeyError(
-                    f"rho_realtime.solver missing {req!r}. "
-                    "Regenerate with dragtrack_ops >= v0.8 (schema requires "
-                    "T_J70_m and T_J70_b per bin)."
-                )
-        self._mt = np.asarray(blk['T_J70_m'], float)
-        self._bt = np.asarray(blk['T_J70_b'], float)
-        self._bin_days = np.asarray(blk.get('bin_days', np.full_like(self._t, np.nan)), float)
+        # ── Extract fit block (rho_realtime.fit) ────────────────────────
+        ft = rho_realtime.get('fit') or {}
+        ft_t = np.array([_to_days(t) for t in ft.get('time_utc', [])], float)
+        ft_rho_main = _as_2d(ft.get('rho_fit'))
+        ft_Tinf_main = _as_1d(ft.get('J70_Tinf_K'))
+        sp_ft = (rho_realtime.get('spatial') or {}).get('fit') or {}
+        ft_lm_main = _as_2d(sp_ft.get('Tinf_lm'))
+        # Per-scenario overrides in the fit block.
+        ft_scen: dict[str, dict] = {}
+        for k in SCENARIOS:
+            r_sc = ft.get(f'rho_{k}')
+            lm_sc = sp_ft.get(f'Tinf_lm_{k}')
+            if r_sc is None:
+                continue
+            r_sc_arr = _as_2d(r_sc)
+            lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else ft_lm_main
+            # Reconstruct scenario Tinf_bg using log10-linear regression
+            # against solver rho400 (same recipe as rho_snapshot):
+            #   Tinf_sc = interp_from_solver(rho400_sc)
+            # Solver truth: (sv_rho400, sv_Tinf).  Log-linear fit.
+            _Tinf_sc = _regress_tinf(sv_rho400, sv_Tinf, r_sc_arr[:, i400])
+            ft_scen[k] = dict(rho400=r_sc_arr[:, i400], Tinf=_Tinf_sc,
+                              Tinf_lm=lm_sc_arr)
 
-        # Sanity: NaNs in the background series → clean interp with edge fills.
-        for name, arr in (
-            ('rho_bg@400', self._rho400),
-            ('T_J70_m', self._mt),
-            ('T_J70_b', self._bt),
-        ):
-            if not np.all(np.isfinite(arr)):
-                n_bad = int(np.sum(~np.isfinite(arr)))
-                arr = self._forward_fill(arr)
-                # Store back on self.
-                if name == 'rho_bg@400':
-                    self._rho400 = arr
-                elif name == 'T_J70_m':
-                    self._mt = arr
-                else:
-                    self._bt = arr
-                # Not fatal — warn via attribute for programmatic access.
-                self._nan_fills = getattr(self, '_nan_fills', {})
-                self._nan_fills[name] = n_bad
-
-    # ── Spatial-map override ──────────────────────────────────────────
-
-    @staticmethod
-    def _prepare_spatial_map(sm: Mapping[str, Any]) -> dict:
-        """Validate + normalise a user spatial_map dict.  Returns a
-        canonical form with keys ``lat``, ``lst``, ``factor``, and
-        (if time-varying) ``t_days``.
-        """
-        lat = np.asarray(sm['lat_deg'], float).ravel()
-        lst = np.asarray(sm['lst_h'],   float).ravel()
-        fac = np.asarray(sm['factor'],  float)
-        if not (np.all(np.diff(lat) > 0) and np.all(np.diff(lst) > 0)):
-            raise ValueError("spatial_map lat_deg and lst_h must be strictly ascending")
-        if fac.ndim == 2:
-            if fac.shape != (lat.size, lst.size):
-                raise ValueError(
-                    f"spatial_map factor shape {fac.shape} != "
-                    f"(lat={lat.size}, lst={lst.size})")
-            return dict(kind='2d', lat=lat, lst=lst, factor=fac)
-        if fac.ndim == 3:
-            if 'time_utc' not in sm:
-                raise KeyError("3D spatial_map factor needs 'time_utc' array")
-            t = np.array([_to_days(x) for x in sm['time_utc']], float)
-            if fac.shape != (t.size, lat.size, lst.size):
-                raise ValueError(
-                    f"spatial_map factor shape {fac.shape} != "
-                    f"(t={t.size}, lat={lat.size}, lst={lst.size})")
-            if not np.all(np.diff(t) > 0):
-                raise ValueError("spatial_map time_utc must be strictly ascending")
-            return dict(kind='3d', t_days=t, lat=lat, lst=lst, factor=fac)
-        raise ValueError(f"spatial_map factor must be 2D or 3D (got ndim={fac.ndim})")
-
-    @staticmethod
-    def _bilinear_2d(grid: np.ndarray, xs: np.ndarray, ys: np.ndarray,
-                     x_q: np.ndarray, y_q: np.ndarray) -> np.ndarray:
-        """Bilinear interp of `grid[len(xs), len(ys)]` at query points."""
-        ix = np.clip(np.searchsorted(xs, x_q, side='right') - 1, 0, len(xs) - 2)
-        iy = np.clip(np.searchsorted(ys, y_q, side='right') - 1, 0, len(ys) - 2)
-        fx = (x_q - xs[ix]) / (xs[ix + 1] - xs[ix])
-        fy = (y_q - ys[iy]) / (ys[iy + 1] - ys[iy])
-        c00 = grid[ix,     iy]
-        c10 = grid[ix + 1, iy]
-        c01 = grid[ix,     iy + 1]
-        c11 = grid[ix + 1, iy + 1]
-        return ((1 - fx) * (1 - fy) * c00 + fx * (1 - fy) * c10
-                + (1 - fx) * fy * c01 + fx * fy * c11)
-
-    def _spatial_factor(self, t_days, lat, lst_h):
-        """Return per-obs multiplicative factor for ρ_400 from override.
-        None → caller should fall back to Fourier clim path.
-        """
-        if self._smap_fn is not None:
-            return np.asarray(self._smap_fn(t_days, lat, lst_h), float).ravel()
-        if self._smap is None:
-            return None
-        sm = self._smap
-        # LST wrap: allow queries at 0..24 mapping onto sorted lst grid.
-        lst_q = np.mod(lst_h, 24.0)
-        lat_q = np.clip(lat, sm['lat'][0], sm['lat'][-1])
-        if sm['kind'] == '2d':
-            return self._bilinear_2d(sm['factor'], sm['lat'], sm['lst'], lat_q, lst_q)
-        # 3D: interp in time first, then bilinear in (lat, lst).
-        t_arr = sm['t_days']
-        it = np.clip(np.searchsorted(t_arr, t_days, side='right') - 1, 0, len(t_arr) - 2)
-        ft = (t_days - t_arr[it]) / (t_arr[it + 1] - t_arr[it])
-        # Vectorised bilinear at both temporal neighbours, then blend.
-        f0 = np.array([
-            self._bilinear_2d(sm['factor'][it[i]], sm['lat'], sm['lst'],
-                              np.atleast_1d(lat_q[i]), np.atleast_1d(lst_q[i]))[0]
-            for i in range(len(t_days))
-        ])
-        f1 = np.array([
-            self._bilinear_2d(sm['factor'][it[i] + 1], sm['lat'], sm['lst'],
-                              np.atleast_1d(lat_q[i]), np.atleast_1d(lst_q[i]))[0]
-            for i in range(len(t_days))
-        ])
-        return (1 - ft) * f0 + ft * f1
-
-    # ── Constructors ───────────────────────────────────────────────────
-
-    @classmethod
-    def from_files(
-        cls,
-        rho_realtime: PathLike | Mapping[str, Any],
-        clim: PathLike | None = None,
-        j70_lut: PathLike | None = None,
-        spatial_map: Mapping[str, Any] | None = None,
-        spatial_map_fn=None,
-    ) -> "DragTrackDensity":
-        """Build from a filesystem path (or already-parsed dict) plus optional overrides."""
-        if isinstance(rho_realtime, Mapping):
-            rt = dict(rho_realtime)
+        # ── Extract forecast block (optional) ───────────────────────────
+        if rho_forecast is not None:
+            fc = rho_forecast.get('fit') or {}
+            fc_t = np.array([_to_days(t) for t in fc.get('time_utc', [])], float)
+            fc_rho_main = _as_2d(fc.get('rho_fit'))
+            fc_Tinf_main = _as_1d(fc.get('J70_Tinf_K'))
+            sp_fc = (rho_forecast.get('spatial') or {}).get('fit') or {}
+            fc_lm_main = _as_2d(sp_fc.get('Tinf_lm'))
+            fc_scen: dict[str, dict] = {}
+            for k in SCENARIOS:
+                r_sc = fc.get(f'rho_{k}')
+                lm_sc = sp_fc.get(f'Tinf_lm_{k}')
+                if r_sc is None:
+                    continue
+                r_sc_arr = _as_2d(r_sc)
+                lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else fc_lm_main
+                _Tinf_sc = _regress_tinf(sv_rho400, sv_Tinf, r_sc_arr[:, i400])
+                fc_scen[k] = dict(rho400=r_sc_arr[:, i400], Tinf=_Tinf_sc,
+                                  Tinf_lm=lm_sc_arr)
         else:
-            with open(rho_realtime, 'r') as f:
-                rt = json.load(f)
-        c = _Clim(clim) if clim is not None else None
-        j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, clim=c, j70=j,
-                   spatial_map=spatial_map, spatial_map_fn=spatial_map_fn)
+            fc_t = np.zeros(0, float)
+            fc_rho_main = np.zeros((0, alts.size))
+            fc_Tinf_main = np.zeros(0, float)
+            fc_lm_main = np.zeros((0, 16), float)
+            fc_scen = {}
 
-    @classmethod
-    def from_url(cls, url: str, **kwargs) -> "DragTrackDensity":
-        """Fetch a ``dragtrack_rho_realtime.json`` over HTTP(S).
+        # ── Merge per source: solver → fit → forecast ───────────────────
+        LAT_g, LST_g, w = _sphere_grid()
+        self._LAT_g, self._LST_g, self._w = LAT_g, LST_g, w
+        self._Y_grid = Y_modes(LAT_g, LST_g)                  # (n_lat, n_lst, 16)
+        self._Y_grid_flat = self._Y_grid.reshape(-1, 16)       # (n_grid, 16)
 
-        Parameters
-        ----------
-        url : str
-            URL of the JSON product.
-        **kwargs
-            Forwarded to :meth:`from_files` (``clim``, ``j70_lut``).
-        """
-        with urlopen(url) as r:
-            rt = json.load(r)
-        return cls.from_files(rt, **kwargs)
-
-    # ── Provenance ─────────────────────────────────────────────────────
-
-    @property
-    def meta(self) -> dict:
-        """Return the ``meta`` block from the rho_realtime JSON (or ``{}``)."""
-        return dict(self._raw.get('meta', {}))
-
-    @property
-    def tle_edge_utc(self) -> str | None:
-        return self.meta.get('tle_edge_utc')
-
-    @property
-    def schema_version(self) -> str | None:
-        return self.meta.get('schema_version')
-
-    @property
-    def generated_utc(self) -> str | None:
-        return self.meta.get('generated_utc')
-
-    @property
-    def time_utc(self) -> list[str]:
-        """The ``solver.time_utc`` grid (ISO strings)."""
-        return list(self._raw['solver']['time_utc'])
-
-    @property
-    def altitude_km(self) -> NDArray[np.float64]:
-        return self._alt_grid.copy()
-
-    @property
-    def recipe(self) -> str:
-        """Human-readable reconstruction recipe string."""
-        return (
-            "rho_400(t, lat, lst) = rho_bg(t) * (1 + sum_l beta_l(doy) * Y_l(lat, lst))\n"
-            "Tinf(t, lat, lst)   = mt(t) * rho_400 + bt(t)\n"
-            "rho(alt)            = rho_400 * J70(alt, Tinf) / J70(400, Tinf)"
-        )
-
-    def provenance(self) -> dict:
-        """One-shot dict describing what/where/when the density was built from."""
-        return {
-            'schema_version': self.schema_version,
-            'generated_utc': self.generated_utc,
-            'tle_edge_utc': self.tle_edge_utc,
-            'n_solver_bins': int(len(self._t)),
-            'time_range_utc': (
-                self.time_utc[0] if self.time_utc else None,
-                self.time_utc[-1] if self.time_utc else None,
-            ),
-            'altitude_km': self._alt_grid.tolist(),
-            'clim_source': str(self.clim.path),
-            'j70_source': str(self.j70.path),
-            'recipe': self.recipe,
-        }
-
-    # ── Internals ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _forward_fill(a: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Replace NaNs by forward-fill then backward-fill (edge safe)."""
-        a = np.asarray(a, float).copy()
-        if not np.any(~np.isfinite(a)):
-            return a
-        # Forward
-        last = np.nan
-        for i in range(a.size):
-            if np.isfinite(a[i]):
-                last = a[i]
+        self._sources: dict[str, dict] = {}
+        for src in ('baseline',) + SCENARIOS:
+            if src == 'baseline':
+                ft_r, ft_T, ft_l = (ft_rho_main[:, i400] if ft_rho_main.size else
+                                    np.zeros(0), ft_Tinf_main, ft_lm_main)
+                fc_r, fc_T, fc_l = (fc_rho_main[:, i400] if fc_rho_main.size else
+                                    np.zeros(0), fc_Tinf_main, fc_lm_main)
             else:
-                a[i] = last
-        # Backward
-        last = np.nan
-        for i in range(a.size - 1, -1, -1):
-            if np.isfinite(a[i]):
-                last = a[i]
-            else:
-                a[i] = last
-        return a
+                if src in ft_scen:
+                    ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['Tinf']
+                    ft_l = ft_scen[src]['Tinf_lm']
+                else:
+                    # Fall back to baseline if scenario missing in JSON
+                    ft_r = ft_rho_main[:, i400] if ft_rho_main.size else np.zeros(0)
+                    ft_T = ft_Tinf_main; ft_l = ft_lm_main
+                if src in fc_scen:
+                    fc_r = fc_scen[src]['rho400']; fc_T = fc_scen[src]['Tinf']
+                    fc_l = fc_scen[src]['Tinf_lm']
+                else:
+                    fc_r = fc_rho_main[:, i400] if fc_rho_main.size else np.zeros(0)
+                    fc_T = fc_Tinf_main; fc_l = fc_lm_main
+            self._sources[src] = self._pack_source(
+                sv_t, sv_rho400, sv_Tinf, sv_lm,
+                ft_t, ft_r, ft_T, ft_l,
+                fc_t, fc_r, fc_T, fc_l)
 
-    def _interp(self, t_days: NDArray[np.float64], arr: NDArray[np.float64]) -> NDArray[np.float64]:
-        return np.interp(t_days, self._t, arr, left=arr[0], right=arr[-1])
+    # ── Source packer ─────────────────────────────────────────────────────
 
-    # ── Public API ─────────────────────────────────────────────────────
+    def _pack_source(self, sv_t, sv_rho, sv_Tinf, sv_lm,
+                     ft_t, ft_rho, ft_Tinf, ft_lm,
+                     fc_t, fc_rho, fc_Tinf, fc_lm) -> dict:
+        """Merge the reanalysis + fit + forecast segments and precompute
+        the per-timestep normalization used by :meth:`rho`."""
+        t = np.concatenate([sv_t, ft_t, fc_t])
+        rho = np.concatenate([sv_rho, ft_rho, fc_rho])
+        Tinf = np.concatenate([sv_Tinf, ft_Tinf, fc_Tinf])
+        lm_list = [x for x in (sv_lm, ft_lm, fc_lm) if x.shape[0] > 0]
+        lm = np.vstack(lm_list) if lm_list else np.zeros((0, 16), float)
+        # Sort by time; keep first occurrence on ties (solver > fit > forecast).
+        order = np.argsort(t, kind='stable')
+        t = t[order]; rho = rho[order]; Tinf = Tinf[order]; lm = lm[order]
+        u_t, u_idx = np.unique(t, return_index=True)
+        rho, Tinf, lm = rho[u_idx], Tinf[u_idx], lm[u_idx]
+        t = u_t
+
+        # Precompute the per-timestep normalization amplitude.
+        n_t = len(t)
+        n_grid = self._Y_grid_flat.shape[0]
+        alt_400 = np.full(n_grid, 400.0)
+        K = np.full(n_t, np.nan)
+        for i in range(n_t):
+            if not (np.isfinite(Tinf[i]) and np.isfinite(rho[i]) and rho[i] > 0):
+                continue
+            frac = self._Y_grid_flat @ lm[i]                # (n_grid,)
+            Tinf_g = Tinf[i] * (1.0 + frac)
+            r_g = self.j70(alt_400, Tinf_g)
+            w_flat = self._w.ravel()
+            m = float(np.sum(r_g * w_flat) / np.sum(w_flat))
+            if m > 0:
+                K[i] = rho[i] / m
+        return dict(t=t, rho400=rho, Tinf_bg=Tinf, Tinf_lm=lm, K=K)
+
+    # ── Public API ────────────────────────────────────────────────────────
 
     def rho(
         self,
@@ -445,24 +282,30 @@ class DragTrackDensity:
         lat_deg: ArrayLike,
         lon_deg: ArrayLike,
         alt_km: ArrayLike,
+        source: str = 'baseline',
     ) -> Union[float, NDArray[np.float64]]:
-        """Evaluate atmospheric density at one or many ``(t, lat, lon, alt)`` points.
+        """Evaluate density at ``(t, lat_deg, lon_deg, alt_km)``.
 
         Parameters
         ----------
-        t : ISO-string, datetime, POSIX-days float, or 1D sequence thereof
-            Sample time(s), UTC.
-        lat_deg, lon_deg : array_like
-            Geodetic latitude / longitude, degrees.  Broadcast with ``t``.
-        alt_km : array_like
-            Geodetic altitude, km.  Broadcast with ``t``.
+        t : ISO-8601 str, ``datetime``, ``np.datetime64``, POSIX-days
+            float, or 1-D sequence thereof.  UTC.
+        lat_deg, lon_deg : array_like, degrees.
+        alt_km : array_like, geodetic altitude, km.
+        source : str, one of ``'baseline'`` (default) or a name in
+            :data:`SCENARIOS`.  ``'baseline'`` uses main fit + forecast
+            rho / Tinf_lm; scenario names swap the fit + forecast segments
+            (solver segment remains reanalysis in every case).
 
         Returns
         -------
         float or ndarray
-            Density in kg / m^3.  Scalar if every input is scalar, otherwise
-            an ndarray broadcast to the common shape.
+            Density in kg / m^3.  Scalar if every input is scalar.
         """
+        if source not in self._sources:
+            raise ValueError(f'unknown source={source!r}; '
+                             f'expected baseline or one of {SCENARIOS}')
+
         scalar_in = (
             _is_scalar_time(t)
             and np.ndim(lat_deg) == 0
@@ -473,81 +316,115 @@ class DragTrackDensity:
         lat = np.atleast_1d(np.asarray(lat_deg, float))
         lon = np.atleast_1d(np.asarray(lon_deg, float))
         alt = np.atleast_1d(np.asarray(alt_km, float))
-        # Broadcast all to common length.
         try:
             t_arr, lat, lon, alt = np.broadcast_arrays(
-                np.asarray(t_arr, object), lat, lon, alt
-            )
+                np.asarray(t_arr, object), lat, lon, alt)
         except ValueError as e:
             raise ValueError(
-                f'Could not broadcast inputs: t={len(t_arr)} lat={lat.shape} '
-                f'lon={lon.shape} alt={alt.shape}'
-            ) from e
-
-        t_days, ut_h, doy = _vec_time_features(np.ravel(t_arr).tolist())
+                f'Could not broadcast inputs: t={len(t_arr)} '
+                f'lat={lat.shape} lon={lon.shape} alt={alt.shape}') from e
+        t_days, ut_h = _vec_time_features(np.ravel(t_arr).tolist())
         lat_f = np.ravel(lat).astype(float)
         lon_f = np.ravel(lon).astype(float)
         alt_f = np.ravel(alt).astype(float)
         lst_h = (ut_h + lon_f / 15.0) % 24.0
 
-        # Time-interp solver arrays.
-        rho_bg = self._interp(t_days, self._rho400)
-        mt = self._interp(t_days, self._mt)
-        bt = self._interp(t_days, self._bt)
-
-        # Spatial factor at (t, lat, lst).  User override wins over Fourier clim.
-        factor = self._spatial_factor(t_days, lat_f, lst_h)
-        if factor is None:
-            beta_frac = self.clim.beta_at_doy(doy)  # (N, 15)
-            Y = Y_modes(lat_f, lst_h)               # (N, 15)
-            frac = np.einsum('ij,ij->i', beta_frac, Y)
-            factor = 1.0 + frac
-        rho_400_pt = np.maximum(rho_bg * factor, 1e-30)
-
-        # Point Tinf then vertical scaling via J70.
-        Tinf_pt = mt * rho_400_pt + bt
-        r_alt = self.j70(alt_f, Tinf_pt)
-        r_400 = self.j70(np.full_like(alt_f, 400.0), Tinf_pt)
-        out = rho_400_pt * r_alt / r_400
+        s = self._sources[source]
+        Tinf_bg = _interp1d(t_days, s['t'], s['Tinf_bg'])
+        K = _interp1d(t_days, s['t'], s['K'])
+        # Interp the 16 spatial coefficients per-mode.
+        Tinf_lm = np.column_stack([_interp1d(t_days, s['t'], s['Tinf_lm'][:, k])
+                                    for k in range(16)])
+        # Per-point synthesis: Tinf_pt = Tinf_bg * (1 + sum_k lm_k * Y_k).
+        Y = Y_modes(lat_f, lst_h)                # (N, 16)
+        frac = np.einsum('nk,nk->n', Tinf_lm, Y)
+        Tinf_pt = Tinf_bg * (1.0 + frac)
+        rho_out = K * self.j70(alt_f, Tinf_pt)
 
         if scalar_in:
-            return float(out[0])
-        return out.reshape(np.shape(np.asarray(t_arr)))
+            return float(rho_out[0])
+        return rho_out.reshape(np.shape(np.asarray(t_arr)))
 
-    # ── Convenience: orbit propagation → density ──────────────────────
+    # ── Loaders ───────────────────────────────────────────────────────────
 
-    def rho_along_tle(self, l1: str, l2: str, times: Iterable[TimeLike]):
-        """Propagate a TLE to each time; return ``(times, lat, lon, alt, rho)``."""
-        from .ephem import propagate_tle
-        t_out, lat, lon, alt = propagate_tle(l1, l2, times)
-        rho = self.rho(t_out, lat, lon, alt)
-        return t_out, lat, lon, alt, rho
+    @classmethod
+    def from_files(
+        cls,
+        rho_realtime: PathLike | Mapping[str, Any],
+        rho_forecast: PathLike | Mapping[str, Any] | None = None,
+        j70_lut: PathLike | None = None,
+    ) -> "DragTrackDensity":
+        """Build from filesystem path(s) or already-parsed dict(s)."""
+        rt = _load_json(rho_realtime) if not isinstance(rho_realtime, Mapping) \
+             else dict(rho_realtime)
+        fc = None
+        if rho_forecast is not None:
+            fc = _load_json(rho_forecast) if not isinstance(rho_forecast, Mapping) \
+                 else dict(rho_forecast)
+        j = J70(j70_lut) if j70_lut is not None else None
+        return cls(rho_realtime=rt, rho_forecast=fc, j70=j)
 
-    def rho_along_kepler(
-        self,
-        *,
-        a_km: float,
-        e: float,
-        inc_deg: float,
-        raan_deg: float,
-        argp_deg: float,
-        m0_deg: float,
-        bstar: float,
-        epoch_utc: TimeLike,
-        times: Iterable[TimeLike],
-    ):
-        """Propagate Kepler elements at ``epoch_utc`` to ``times``; return orbit + rho."""
-        from .ephem import propagate_kepler
-        t_out, lat, lon, alt = propagate_kepler(
-            a_km=a_km, e=e, inc_deg=inc_deg, raan_deg=raan_deg,
-            argp_deg=argp_deg, m0_deg=m0_deg, bstar=bstar,
-            epoch_utc=epoch_utc, times=times,
-        )
-        rho = self.rho(t_out, lat, lon, alt)
-        return t_out, lat, lon, alt, rho
+    @classmethod
+    def from_url(
+        cls,
+        rho_realtime_url: str,
+        rho_forecast_url: str | None = None,
+        j70_lut: PathLike | None = None,
+    ) -> "DragTrackDensity":
+        """Fetch JSON products over HTTP(S)."""
+        with urlopen(rho_realtime_url) as r:
+            rt = json.load(r)
+        fc = None
+        if rho_forecast_url:
+            with urlopen(rho_forecast_url) as r:
+                fc = json.load(r)
+        j = J70(j70_lut) if j70_lut is not None else None
+        return cls(rho_realtime=rt, rho_forecast=fc, j70=j)
+
+    # ── Metadata ──────────────────────────────────────────────────────────
+
+    @property
+    def meta(self) -> dict:
+        """The ``meta`` block from the ``rho_realtime`` JSON."""
+        return dict(self._meta)
+
+    @property
+    def altitude_km(self) -> NDArray[np.float64]:
+        """Native altitude grid, km (informational — ``rho()`` accepts any alt)."""
+        return self._alt_grid.copy()
 
 
-# ─── Small helpers exposed for scalar/vector routing ───────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────
+
+def _regress_tinf(rho_truth: NDArray, Tinf_truth: NDArray,
+                   rho_target: NDArray) -> NDArray:
+    """Log-linear regression of Tinf on log10(rho_400) — used internally
+    to reconstruct per-scenario background temperature."""
+    ok = (np.isfinite(rho_truth) & np.isfinite(Tinf_truth)
+          & (rho_truth > 0))
+    if int(ok.sum()) < 3:
+        return np.full_like(rho_target, np.nan)
+    k, b = np.polyfit(np.log10(rho_truth[ok]), Tinf_truth[ok], 1)
+    return k * np.log10(np.maximum(rho_target, 1e-30)) + b
+
+
+def _interp1d(x_new: NDArray, x_ref: NDArray, y_ref: NDArray) -> NDArray:
+    """Edge-held linear interpolation for possibly-NaN reference series."""
+    ok = np.isfinite(y_ref)
+    if not np.any(ok):
+        return np.full_like(x_new, np.nan)
+    return np.interp(x_new, x_ref[ok], y_ref[ok],
+                     left=y_ref[ok][0], right=y_ref[ok][-1])
+
+
+def _load_json(fp: PathLike) -> dict:
+    p = Path(fp)
+    if p.suffix.endswith('.gz'):
+        with gzip.open(p, 'rt', encoding='utf-8') as f:
+            return json.load(f)
+    with p.open('r', encoding='utf-8') as f:
+        return json.load(f)
+
 
 def _is_scalar_time(t: Any) -> bool:
     if isinstance(t, (str, datetime, np.datetime64)):
@@ -558,8 +435,6 @@ def _is_scalar_time(t: Any) -> bool:
 
 
 def _as_time_seq(t):
-    """Coerce ``t`` into a 1-D sequence of time-like elements."""
     if _is_scalar_time(t):
         return [t]
-    # np.array with dtype=object handles heterogeneous lists.
     return list(t)
