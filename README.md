@@ -66,10 +66,11 @@ rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=alt)
 
 ---
 
-## What's in the JSONs (segments the reader merges)
+## What's in the JSONs
 
-The reader concatenates three time segments in the following precedence
-(solver wins over fit, fit wins over forecast on ties) and sorts by time:
+`DragTrackDensity` concatenates three time segments in the following
+precedence (solver wins over fit, fit wins over forecast on ties) and
+sorts by time:
 
 | Segment    | Where            | Time span                                     | What it is |
 |------------|------------------|-----------------------------------------------|------------|
@@ -305,7 +306,7 @@ rho = m.rho_from_state('2026-09-13T12:00:00Z', r_km,
 package handles the rotation to Earth-fixed and the WGS84 conversion
 internally.
 
-**Frame caveat.** `EarthMJ2000Eq` is treated as TEME inside the reader —
+**Frame caveat.** `EarthMJ2000Eq` is treated as TEME here —
 only the GMST rotation is applied (no precession / nutation).  For a
 density lookup this is an ECEF position offset of ~50 arcsec at the epoch
 (~1 km at 400 km altitude), well below the atmosphere model's own
