@@ -18,7 +18,7 @@ DragTrack JSON data products
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.3.0-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.4.0-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -197,9 +197,9 @@ The JSON providep:
 
 * a **global average** — the horizontally-averaged density at 400 km
   (`solver.rho[:, i400]`) and the corresponding global mean thermospheric
-  temperature (`solver.J70_Tinf_K`), plus their `fit`-block extensions
+  temperature (`solver.TJ70_K`), plus their `fit`-block extensions
   toward the present and future;
-* a **spatial pattern** — sixteen spherical harmonic coefficients `Tinf_lm[t, k]` that
+* a **spatial pattern** — sixteen spherical harmonic coefficients `TJ70_lm[t, k]` that
   describe how the thermospheric temperature varies over latitude and
   local solar time as a perturbation on top of the
   global background.
@@ -209,8 +209,8 @@ Point density at `(t, lat, lon, alt)` is reconstructed as:
 ```
 lst_h    = (UT_hours(t) + lon_deg / 15) mod 24
 Y_k      = 16 spherical-harmonic modes evaluated at (lat, lst_h)
-Tinf     = Tinf_bg(t) · (1 + Σ_k Tinf_lm(t, k) · Y_k)
-rho(alt) = K(t) · J70(alt, Tinf)
+TJ70     = TJ70_bg(t) · (1 + Σ_k TJ70_lm(t, k) · Y_k)
+rho(alt) = K(t) · J70(alt, TJ70)
 ```
 
 `K(t)` is a per-timestep amplitude that keeps the sphere-average of the

@@ -11,7 +11,7 @@ Usage
 -----
 >>> from dragtrack import J70
 >>> j = J70()
->>> j(alt_km=450, Tinf_K=850)   # kg / m^3
+>>> j(alt_km=450, TJ70_K=850)   # kg / m^3  (TJ70 == Jacchia's Tinf)
 """
 from __future__ import annotations
 
@@ -51,7 +51,10 @@ def _decode(a: dict) -> np.ndarray:
 
 
 class J70:
-    """Callable Jacchia-70 lookup: ``rho_kg_m3 = J70()(alt_km, Tinf_K)``.
+    """Callable Jacchia-70 lookup: ``rho_kg_m3 = J70()(alt_km, TJ70_K)``.
+
+    ``TJ70_K`` is the exospheric temperature parameter (Jacchia's ``Tinf``,
+    same numeric value — renamed for consistency with the reader package).
 
     Parameters
     ----------
@@ -83,14 +86,16 @@ class J70:
             if not np.all(np.diff(ax) > 0):
                 raise ValueError(f'J70 LUT axis {name!r} is not monotonic increasing')
 
-    def __call__(self, alt_km: ArrayLike, Tinf_K: ArrayLike) -> NDArray[np.float64]:
-        """Interpolate ``rho`` at ``(alt_km, Tinf_K)`` — inputs broadcast.
+    def __call__(self, alt_km: ArrayLike, TJ70_K: ArrayLike) -> NDArray[np.float64]:
+        """Interpolate ``rho`` at ``(alt_km, TJ70_K)`` — inputs broadcast.
 
-        Trilinear interpolation is performed on ``log10(rho)`` for
-        numerical stability across ~10 orders of magnitude.
+        ``TJ70_K`` is Jacchia's ``Tinf`` parameter (same numeric value),
+        renamed to match the reader package's naming.  Trilinear
+        interpolation is performed on ``log10(rho)`` for numerical
+        stability across ~10 orders of magnitude.
         """
         a = np.asarray(alt_km, float)
-        T = np.asarray(Tinf_K, float)
+        T = np.asarray(TJ70_K, float)
         a, T = np.broadcast_arrays(a, T)
         a = np.clip(a, self.z[0], self.z[-1])
         T = np.clip(T, self.T[0], self.T[-1])

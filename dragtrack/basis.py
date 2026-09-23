@@ -1,4 +1,4 @@
-"""16-mode spherical-harmonic basis for the horizontal Tinf pattern.
+"""16-mode spherical-harmonic basis for the horizontal TJ70 pattern.
 
 Used by :class:`dragtrack.DragTrackDensity` internally.  Most users don't
 need to touch this module.

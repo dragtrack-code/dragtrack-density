@@ -147,9 +147,9 @@ class DragTrackDensity:
         sv = rho_realtime['solver']
         sv_t = np.array([_to_days(t) for t in sv['time_utc']], float)
         sv_rho400 = _as_2d(sv['rho'])[:, i400]
-        sv_Tinf = _as_1d(sv['J70_Tinf_K'])
+        sv_TJ70 = _as_1d(sv['TJ70_K'])
         sv_lm = _as_2d((rho_realtime.get('spatial', {}).get('solver', {})
-                        .get('Tinf_lm')))
+                        .get('TJ70_lm')))
         if sv_lm.shape != (sv_t.size, 16):
             raise ValueError(
                 "This file doesn't look like a current DragTrack realtime "
@@ -160,49 +160,49 @@ class DragTrackDensity:
         ft = rho_realtime.get('fit') or {}
         ft_t = np.array([_to_days(t) for t in ft.get('time_utc', [])], float)
         ft_rho_main = _as_2d(ft.get('rho_fit'))
-        ft_Tinf_main = _as_1d(ft.get('J70_Tinf_K'))
+        ft_TJ70_main = _as_1d(ft.get('TJ70_K'))
         sp_ft = (rho_realtime.get('spatial') or {}).get('fit') or {}
-        ft_lm_main = _as_2d(sp_ft.get('Tinf_lm'))
+        ft_lm_main = _as_2d(sp_ft.get('TJ70_lm'))
         # Per-scenario overrides in the fit block.
         ft_scen: dict[str, dict] = {}
         for k in SCENARIOS:
             r_sc = ft.get(f'rho_{k}')
-            lm_sc = sp_ft.get(f'Tinf_lm_{k}')
+            lm_sc = sp_ft.get(f'TJ70_lm_{k}')
             if r_sc is None:
                 continue
             r_sc_arr = _as_2d(r_sc)
             lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else ft_lm_main
-            # Reconstruct scenario Tinf_bg using log10-linear regression
+            # Reconstruct scenario TJ70_bg using log10-linear regression
             # against solver rho400 (same recipe as rho_snapshot):
-            #   Tinf_sc = interp_from_solver(rho400_sc)
-            # Solver truth: (sv_rho400, sv_Tinf).  Log-linear fit.
-            _Tinf_sc = _regress_tinf(sv_rho400, sv_Tinf, r_sc_arr[:, i400])
-            ft_scen[k] = dict(rho400=r_sc_arr[:, i400], Tinf=_Tinf_sc,
-                              Tinf_lm=lm_sc_arr)
+            #   TJ70_sc = interp_from_solver(rho400_sc)
+            # Solver truth: (sv_rho400, sv_TJ70).  Log-linear fit.
+            _TJ70_sc = _regress_tinf(sv_rho400, sv_TJ70, r_sc_arr[:, i400])
+            ft_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
+                              TJ70_lm=lm_sc_arr)
 
         # ── Extract forecast block (optional) ───────────────────────────
         if rho_forecast is not None:
             fc = rho_forecast.get('fit') or {}
             fc_t = np.array([_to_days(t) for t in fc.get('time_utc', [])], float)
             fc_rho_main = _as_2d(fc.get('rho_fit'))
-            fc_Tinf_main = _as_1d(fc.get('J70_Tinf_K'))
+            fc_TJ70_main = _as_1d(fc.get('TJ70_K'))
             sp_fc = (rho_forecast.get('spatial') or {}).get('fit') or {}
-            fc_lm_main = _as_2d(sp_fc.get('Tinf_lm'))
+            fc_lm_main = _as_2d(sp_fc.get('TJ70_lm'))
             fc_scen: dict[str, dict] = {}
             for k in SCENARIOS:
                 r_sc = fc.get(f'rho_{k}')
-                lm_sc = sp_fc.get(f'Tinf_lm_{k}')
+                lm_sc = sp_fc.get(f'TJ70_lm_{k}')
                 if r_sc is None:
                     continue
                 r_sc_arr = _as_2d(r_sc)
                 lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else fc_lm_main
-                _Tinf_sc = _regress_tinf(sv_rho400, sv_Tinf, r_sc_arr[:, i400])
-                fc_scen[k] = dict(rho400=r_sc_arr[:, i400], Tinf=_Tinf_sc,
-                                  Tinf_lm=lm_sc_arr)
+                _TJ70_sc = _regress_tinf(sv_rho400, sv_TJ70, r_sc_arr[:, i400])
+                fc_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
+                                  TJ70_lm=lm_sc_arr)
         else:
             fc_t = np.zeros(0, float)
             fc_rho_main = np.zeros((0, alts.size))
-            fc_Tinf_main = np.zeros(0, float)
+            fc_TJ70_main = np.zeros(0, float)
             fc_lm_main = np.zeros((0, 16), float)
             fc_scen = {}
 
@@ -216,45 +216,45 @@ class DragTrackDensity:
         for src in ('baseline',) + SCENARIOS:
             if src == 'baseline':
                 ft_r, ft_T, ft_l = (ft_rho_main[:, i400] if ft_rho_main.size else
-                                    np.zeros(0), ft_Tinf_main, ft_lm_main)
+                                    np.zeros(0), ft_TJ70_main, ft_lm_main)
                 fc_r, fc_T, fc_l = (fc_rho_main[:, i400] if fc_rho_main.size else
-                                    np.zeros(0), fc_Tinf_main, fc_lm_main)
+                                    np.zeros(0), fc_TJ70_main, fc_lm_main)
             else:
                 if src in ft_scen:
-                    ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['Tinf']
-                    ft_l = ft_scen[src]['Tinf_lm']
+                    ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['TJ70']
+                    ft_l = ft_scen[src]['TJ70_lm']
                 else:
                     # Fall back to baseline if scenario missing in JSON
                     ft_r = ft_rho_main[:, i400] if ft_rho_main.size else np.zeros(0)
-                    ft_T = ft_Tinf_main; ft_l = ft_lm_main
+                    ft_T = ft_TJ70_main; ft_l = ft_lm_main
                 if src in fc_scen:
-                    fc_r = fc_scen[src]['rho400']; fc_T = fc_scen[src]['Tinf']
-                    fc_l = fc_scen[src]['Tinf_lm']
+                    fc_r = fc_scen[src]['rho400']; fc_T = fc_scen[src]['TJ70']
+                    fc_l = fc_scen[src]['TJ70_lm']
                 else:
                     fc_r = fc_rho_main[:, i400] if fc_rho_main.size else np.zeros(0)
-                    fc_T = fc_Tinf_main; fc_l = fc_lm_main
+                    fc_T = fc_TJ70_main; fc_l = fc_lm_main
             self._sources[src] = self._pack_source(
-                sv_t, sv_rho400, sv_Tinf, sv_lm,
+                sv_t, sv_rho400, sv_TJ70, sv_lm,
                 ft_t, ft_r, ft_T, ft_l,
                 fc_t, fc_r, fc_T, fc_l)
 
     # ── Source packer ─────────────────────────────────────────────────────
 
-    def _pack_source(self, sv_t, sv_rho, sv_Tinf, sv_lm,
-                     ft_t, ft_rho, ft_Tinf, ft_lm,
-                     fc_t, fc_rho, fc_Tinf, fc_lm) -> dict:
+    def _pack_source(self, sv_t, sv_rho, sv_TJ70, sv_lm,
+                     ft_t, ft_rho, ft_TJ70, ft_lm,
+                     fc_t, fc_rho, fc_TJ70, fc_lm) -> dict:
         """Merge the reanalysis + fit + forecast segments and precompute
         the per-timestep normalization used by :meth:`rho`."""
         t = np.concatenate([sv_t, ft_t, fc_t])
         rho = np.concatenate([sv_rho, ft_rho, fc_rho])
-        Tinf = np.concatenate([sv_Tinf, ft_Tinf, fc_Tinf])
+        TJ70 = np.concatenate([sv_TJ70, ft_TJ70, fc_TJ70])
         lm_list = [x for x in (sv_lm, ft_lm, fc_lm) if x.shape[0] > 0]
         lm = np.vstack(lm_list) if lm_list else np.zeros((0, 16), float)
         # Sort by time; keep first occurrence on ties (solver > fit > forecast).
         order = np.argsort(t, kind='stable')
-        t = t[order]; rho = rho[order]; Tinf = Tinf[order]; lm = lm[order]
+        t = t[order]; rho = rho[order]; TJ70 = TJ70[order]; lm = lm[order]
         u_t, u_idx = np.unique(t, return_index=True)
-        rho, Tinf, lm = rho[u_idx], Tinf[u_idx], lm[u_idx]
+        rho, TJ70, lm = rho[u_idx], TJ70[u_idx], lm[u_idx]
         t = u_t
 
         # Precompute the per-timestep normalization amplitude.
@@ -263,16 +263,16 @@ class DragTrackDensity:
         alt_400 = np.full(n_grid, 400.0)
         K = np.full(n_t, np.nan)
         for i in range(n_t):
-            if not (np.isfinite(Tinf[i]) and np.isfinite(rho[i]) and rho[i] > 0):
+            if not (np.isfinite(TJ70[i]) and np.isfinite(rho[i]) and rho[i] > 0):
                 continue
             frac = self._Y_grid_flat @ lm[i]                # (n_grid,)
-            Tinf_g = Tinf[i] * (1.0 + frac)
-            r_g = self.j70(alt_400, Tinf_g)
+            TJ70_g = TJ70[i] * (1.0 + frac)
+            r_g = self.j70(alt_400, TJ70_g)
             w_flat = self._w.ravel()
             m = float(np.sum(r_g * w_flat) / np.sum(w_flat))
             if m > 0:
                 K[i] = rho[i] / m
-        return dict(t=t, rho400=rho, Tinf_bg=Tinf, Tinf_lm=lm, K=K)
+        return dict(t=t, rho400=rho, TJ70_bg=TJ70, TJ70_lm=lm, K=K)
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -294,7 +294,7 @@ class DragTrackDensity:
         alt_km : array_like, geodetic altitude, km.
         source : str, one of ``'baseline'`` (default) or a name in
             :data:`SCENARIOS`.  ``'baseline'`` uses main fit + forecast
-            rho / Tinf_lm; scenario names swap the fit + forecast segments
+            rho / TJ70_lm; scenario names swap the fit + forecast segments
             (solver segment remains reanalysis in every case).
 
         Returns
@@ -330,16 +330,16 @@ class DragTrackDensity:
         lst_h = (ut_h + lon_f / 15.0) % 24.0
 
         s = self._sources[source]
-        Tinf_bg = _interp1d(t_days, s['t'], s['Tinf_bg'])
+        TJ70_bg = _interp1d(t_days, s['t'], s['TJ70_bg'])
         K = _interp1d(t_days, s['t'], s['K'])
         # Interp the 16 spatial coefficients per-mode.
-        Tinf_lm = np.column_stack([_interp1d(t_days, s['t'], s['Tinf_lm'][:, k])
+        TJ70_lm = np.column_stack([_interp1d(t_days, s['t'], s['TJ70_lm'][:, k])
                                     for k in range(16)])
-        # Per-point synthesis: Tinf_pt = Tinf_bg * (1 + sum_k lm_k * Y_k).
+        # Per-point synthesis: TJ70_pt = TJ70_bg * (1 + sum_k lm_k * Y_k).
         Y = Y_modes(lat_f, lst_h)                # (N, 16)
-        frac = np.einsum('nk,nk->n', Tinf_lm, Y)
-        Tinf_pt = Tinf_bg * (1.0 + frac)
-        rho_out = K * self.j70(alt_f, Tinf_pt)
+        frac = np.einsum('nk,nk->n', TJ70_lm, Y)
+        TJ70_pt = TJ70_bg * (1.0 + frac)
+        rho_out = K * self.j70(alt_f, TJ70_pt)
 
         if scalar_in:
             return float(rho_out[0])
@@ -466,15 +466,15 @@ class DragTrackDensity:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
-def _regress_tinf(rho_truth: NDArray, Tinf_truth: NDArray,
+def _regress_tinf(rho_truth: NDArray, TJ70_truth: NDArray,
                    rho_target: NDArray) -> NDArray:
-    """Log-linear regression of Tinf on log10(rho_400) — used internally
+    """Log-linear regression of TJ70 on log10(rho_400) — used internally
     to reconstruct per-scenario background temperature."""
-    ok = (np.isfinite(rho_truth) & np.isfinite(Tinf_truth)
+    ok = (np.isfinite(rho_truth) & np.isfinite(TJ70_truth)
           & (rho_truth > 0))
     if int(ok.sum()) < 3:
         return np.full_like(rho_target, np.nan)
-    k, b = np.polyfit(np.log10(rho_truth[ok]), Tinf_truth[ok], 1)
+    k, b = np.polyfit(np.log10(rho_truth[ok]), TJ70_truth[ok], 1)
     return k * np.log10(np.maximum(rho_target, 1e-30)) + b
 
 
