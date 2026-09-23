@@ -55,10 +55,10 @@ def test_j70_vectorized():
     T = np.full_like(alt, 900.)
     r = j(alt, T)
     assert r.shape == alt.shape
-    assert np.all(np.diff(r) < 0)     # rho decreases with alt at fixed Tinf
+    assert np.all(np.diff(r) < 0)     # rho decreases with alt at fixed TJ70
     assert np.all(np.isfinite(r) & (r > 0))
     T_lo = j(np.full(4, 400.0), np.array([600., 900., 1200., 1500.]))
-    assert np.all(np.diff(T_lo) > 0)  # rho at 400 increases with Tinf
+    assert np.all(np.diff(T_lo) > 0)  # rho at 400 increases with TJ70
 
 
 def test_j70_clips_out_of_range_alt():
@@ -98,7 +98,7 @@ def test_density_from_synthetic_dict(rho_realtime_dict):
 
 def test_density_meta(rho_realtime_dict):
     m = DragTrackDensity.from_files(rho_realtime_dict)
-    assert m.meta.get('schema_version') == '0.8.0-test'
+    assert m.meta.get('schema_version') == '0.9.0-test'
     assert m.meta.get('tle_edge_utc') == '2026-09-13T00:00:00Z'
 
 
@@ -128,7 +128,7 @@ def test_density_missing_solver_raises(rho_realtime_dict):
 
 def test_density_missing_spatial_solver_lm_raises(rho_realtime_dict):
     bad = json.loads(json.dumps(rho_realtime_dict))
-    del bad['spatial']['solver']['Tinf_lm']
+    del bad['spatial']['solver']['TJ70_lm']
     with pytest.raises(ValueError, match='current DragTrack realtime'):
         DragTrackDensity.from_files(bad)
 
