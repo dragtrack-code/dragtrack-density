@@ -18,10 +18,11 @@ DragTrack JSON data products
 ## Install
 
 ```bash
-pip install dragtrack
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.3.0-py3-none-any.whl
 ```
 
-Runtime dependency: `numpy>=1.20`.
+Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
+shipped alongside the data on Hugging Face.
 
 ---
 
@@ -34,16 +35,19 @@ Two JSONs describe the atmosphere:
 | `dragtrack_rho_realtime_*.json` | past ~27 days + short extrapolation | yes |
 | `dragtrack_rho_forecast_*.json` | up to 45 days ahead (SWPC-driven)   | optional |
 
-Fetch the latest from the DragTrack HTTP endpoint:
+Fetch the latest snapshot from the DragTrack Hugging Face dataset:
 
 ```python
+BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
 m = DragTrackDensity.from_url(
-    'https://.../dragtrack_rho_realtime_v0.8.0.json',
-    rho_forecast_url='https://.../dragtrack_rho_forecast_v0.8.0.json',
+    f'{BASE}/rho_realtime.json',
+    rho_forecast_url=f'{BASE}/rho_forecast.json',
 )
 ```
 
-or download the files and use `from_files(...)`.
+Pin to a historic snapshot by swapping `latest/` for a dated directory
+(`2026-09-23/` etc.) — see `manifest.json` on the dataset for the list.
+Or download the files and use `from_files(...)`.
 
 ---
 
