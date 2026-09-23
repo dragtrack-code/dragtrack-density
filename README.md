@@ -112,13 +112,17 @@ Recipe:
 
     BC = 2 · vdot / (rho_eff · v²)
 
-* `vdot` = Picone et al. [2005] drag deceleration from consecutive raw TLE pairs
-  (mean-motion change divided by an F·v³-weighted time integral,
+* `vdot` = Picone et al. [2005] drag deceleration from consecutive raw TLE
+  pairs (mean-motion change divided by an F·v³-weighted time integral,
   `F = (1 - r·ω·cos(inc)/v)²` = co-rotation factor).
 * `rho_eff` = `Σρ·F·v³ / Σ F·v³` sampled at 5-min steps over the same
-  pair interval
-* `v` = pair-mean orbital speed (m/s)
-  `v₀²` factor.
+  pair interval — **rho evaluated by `DragTrackDensity.rho()`**, i.e. the
+  same code path a downstream GMAT user runs.  BC + your drag force are
+  therefore self-consistent: computing drag via `library.rho() · BC` on
+  the same orbit reproduces the pair's `vdot` exactly (to sampling
+  precision).
+* `v` = pair-mean orbital speed (m/s), matching Picone's `v₀²` factor in
+  the numerator.
 * Each record includes `state_t1` / `state_t2` (WGS84 geodetic at the
   bounding TLE epochs) for GMAT coordinate-convention verification.
 
