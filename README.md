@@ -96,7 +96,9 @@ if you need to detect out-of-range queries.
 ## Per-satellite BC (`bc_track/<norad>.json`)
 
 Alongside the atmosphere JSONs, the HF dataset ships a ~30-day per-satellite
-BC time series (`Cd·A/m` in m²/kg) for each tracked satellite:
+BC time series (`Cd·A/m` in m²/kg) for each tracked satellite, and a
+`reference/bc_track/<norad>.json` archive of historic reentered satellites
+(Tiangong-1 at least — 180 d before its 2018-04-02 reentry, alt 318 → 171 km):
 
 ```python
 import json, urllib.request
