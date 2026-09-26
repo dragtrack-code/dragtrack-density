@@ -316,3 +316,65 @@ def test_real_json_roundtrip(real_rho_realtime, real_rho_forecast):
     assert isinstance(r, float)
     assert _RHO_LO < r < _RHO_HI
     assert m.meta
+
+
+# ── v0.5.0: coverage, solver precedence, history, altitude reference ────
+
+def _with_hindcast_scenario(rt):
+    """Copy of the synthetic realtime whose fit block also spans the solver
+    window (like real files) with a 'extreme' scenario 3x baseline."""
+    import copy
+    d = copy.deepcopy(rt)
+    ft = d['fit']
+    hind = [f'2026-09-13T{h:02d}:00:00Z' for h in range(1, 24, 3)]
+    ft['time_utc'] = hind + ft['time_utc']
+    ft['rho_fit'] = [d['solver']['rho'][0]] * len(hind) + ft['rho_fit']
+    ft['TJ70_K'] = [850.0] * len(hind) + ft['TJ70_K']
+    ft['rho_extreme'] = [[3 * x for x in r] for r in ft['rho_fit']]
+    d['spatial']['fit']['time_utc'] = ft['time_utc']
+    d['spatial']['fit']['TJ70_lm'] = [[0.0] * 16 for _ in ft['time_utc']]
+    return d
+
+
+def test_scenarios_do_not_change_the_past(rho_realtime_dict):
+    m = DragTrackDensity.from_files(_with_hindcast_scenario(rho_realtime_dict))
+    t_past = '2026-09-13T10:00:00Z'          # inside solver window
+    b = m.rho(t_past, 0.0, 0.0, 400.0)
+    x = m.rho(t_past, 0.0, 0.0, 400.0, source='extreme')
+    assert abs(x / b - 1.0) < 1e-12
+    t_future = '2026-09-14T06:00:00Z'        # after solver edge
+    b2 = m.rho(t_future, 0.0, 0.0, 400.0)
+    x2 = m.rho(t_future, 0.0, 0.0, 400.0, source='extreme')
+    assert x2 > 2.5 * b2
+
+
+def test_nan_outside_coverage(rho_realtime_dict):
+    m = DragTrackDensity.from_files(rho_realtime_dict)
+    assert np.isnan(m.rho('2020-01-01T00:00:00Z', 0.0, 0.0, 400.0))
+    assert np.isnan(m.rho('2027-01-01T00:00:00Z', 0.0, 0.0, 400.0))
+    cov = m.coverage
+    assert cov['solver_start'] == '2026-09-13T00:00:00Z'
+    assert cov['solver_edge'] == '2026-09-13T21:00:00Z'
+
+
+def test_rho_full_extends_history(rho_realtime_dict):
+    import copy
+    full = copy.deepcopy(rho_realtime_dict)
+    hist = [f'2026-06-{d:02d}T12:00:00Z' for d in range(1, 11)]
+    full['solver']['time_utc'] = hist
+    full['solver']['rho'] = [full['solver']['rho'][0]] * len(hist)
+    full['solver']['TJ70_K'] = [850.0] * len(hist)
+    full['spatial'] = {'solver': {'time_utc': hist,
+                                  'TJ70_lm': [[0.0] * 16 for _ in hist]}}
+    t = '2026-06-05T00:00:00Z'
+    assert np.isnan(DragTrackDensity.from_files(rho_realtime_dict).rho(t, 0, 0, 400))
+    m = DragTrackDensity.from_files(rho_realtime_dict, rho_full=full)
+    assert np.isfinite(m.rho(t, 0.0, 0.0, 400.0))
+    assert m.coverage['solver_start'] == '2026-06-01T12:00:00Z'
+
+
+def test_geodetic_to_sphere_height():
+    from dragtrack.model import _geodetic_to_sphere_height
+    h = _geodetic_to_sphere_height(np.array([0.0, 90.0]), np.array([400.0, 400.0]))
+    assert abs(h[0] - (6378.137 + 400.0 - 6371.010)) < 1e-6      # equator
+    assert abs(h[1] - (6356.7523142 + 400.0 - 6371.010)) < 1e-3  # pole
