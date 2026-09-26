@@ -13,6 +13,10 @@ rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)
 The package ships a bundled Jacchia-1970 altitude profile lookup table and reads the
 DragTrack JSON data products.
 
+The DragTrack products are derived from USSPACECOM data obtained via
+[Space-Track.org](https://www.space-track.org); please cite it when publishing results
+based on them.
+
 ---
 
 ## Install
