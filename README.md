@@ -18,7 +18,7 @@ DragTrack JSON data products.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.0-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.1-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -43,11 +43,12 @@ m = DragTrackDensity.from_url(
     f'{BASE}/rho_realtime.json',
     rho_full_url=f'{BASE}/rho_full.json',      # optional: 2014+ history
 )
-print(m.coverage)   # {'solver_start': ..., 'solver_edge': ..., 'end': ...}
+print(m.coverage)   # {'solver_start': ..., 'solver_edge': ..., 'end': ..., 'end_by_source': {...}}
 ```
 
 Queries outside `m.coverage` (`solver_start` → `end`) return `NaN` — the
-package never extrapolates or holds the edge value.
+package never extrapolates or holds the edge value.  `end` is for the
+default `source='baseline'`; scenarios run further (`end_by_source[name]`).
 
 Pin to a historic snapshot by swapping `latest/` for a dated directory
 (`2026-09-23/` etc.) — see `manifest.json` on the dataset for the list.
@@ -82,8 +83,8 @@ rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=alt)
 
 | Segment    | Where            | Time span                                     | What it is |
 |------------|------------------|-----------------------------------------------|------------|
-| `solver`   | `rho_realtime` (last ~27 d), `rho_full` (2014-01-01 →) | → solver edge (~1 day behind now) | TLE-based mass density profiles (reanalysis) |
-| `fit`      | `rho_realtime`   | ~27 d back → `max(S_edge, G_edge) + horizon` | Hourly linear regression `rho_zref = a·S(t) + b·G(t) + c` fit against the last 27 d of solver.  Extends past raw-driver edge by 2× LPF RC (S: 48-h RC → +96 h; G: 9-h RC → +18 h) via persist-pad + causal IIR. |
+| `solver`   | `rho_realtime` (last ~27 d), `rho_full` (2014-01-01 →) | → solver edge (~1–2 days behind now) | TLE-based mass density profiles (reanalysis) |
+| `fit`      | `rho_realtime`   | ~27 d back → `max(S_edge, G_edge) + horizon` | Hourly linear regression `rho_zref = a·S(t) + b·G(t − t0) + c` fit against the last 27 d of solver.  Extends past raw-driver edge by 2× LPF RC (S: 48-h RC → +96 h; G: 9-h RC → +18 h) via persist-pad + causal IIR. |
 
 The package uses the **solver** segment up to its edge and the fit
 segment only after it.  (The fit block also carries hindcast

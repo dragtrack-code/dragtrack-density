@@ -54,7 +54,7 @@ class J70:
     """Callable Jacchia-70 lookup: ``rho_kg_m3 = J70()(alt_km, TJ70_K)``.
 
     ``TJ70_K`` is the exospheric temperature parameter (Jacchia's ``Tinf``,
-    same numeric value — renamed for consistency with the reader package).
+    same numeric value — renamed for consistency with the dragtrack package).
 
     Parameters
     ----------
@@ -90,7 +90,7 @@ class J70:
         """Interpolate ``rho`` at ``(alt_km, TJ70_K)`` — inputs broadcast.
 
         ``TJ70_K`` is Jacchia's ``Tinf`` parameter (same numeric value),
-        renamed to match the reader package's naming.  Trilinear
+        renamed to match the dragtrack package's naming.  Trilinear
         interpolation is performed on ``log10(rho)`` for numerical
         stability across ~10 orders of magnitude.
         """
