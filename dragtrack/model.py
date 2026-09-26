@@ -99,7 +99,7 @@ class DragTrackDensity:
     """Point atmospheric density ``rho(t, lat, lon, alt)``.
 
     Construct one of these from a DragTrack realtime JSON (and optionally
-    a forecast JSON), then call :meth:`rho` with any mix of scalar and
+    the historical-archive JSON), then call :meth:`rho` with any mix of scalar and
     array-like coordinates.  See the README for coordinate conventions
     and the list of scenarios.
 
@@ -108,9 +108,6 @@ class DragTrackDensity:
     rho_realtime : dict
         Parsed realtime JSON (see :meth:`from_files` / :meth:`from_url`
         for the convenience loaders that handle file paths and URLs).
-    rho_forecast : dict, optional
-        Parsed forecast JSON.  Extends the reachable time range by up
-        to ~45 days.
     rho_full : dict, optional
         Parsed historical-archive JSON (``dragtrack_rho_full_*``).  Adds
         solver history from 2014 onward for times before the realtime
@@ -125,9 +122,8 @@ class DragTrackDensity:
     def __init__(
         self,
         rho_realtime: Mapping[str, Any],
-        rho_forecast: Mapping[str, Any] | None = None,
-        j70: J70 | None = None,
         rho_full: Mapping[str, Any] | None = None,
+        j70: J70 | None = None,
     ) -> None:
         if 'solver' not in rho_realtime:
             raise KeyError(
@@ -183,7 +179,7 @@ class DragTrackDensity:
             sv_TJ70 = np.concatenate([h_TJ70[keep], sv_TJ70])
             sv_lm = np.vstack([h_lm[keep], sv_lm])
 
-        # Solver edge: last solver (reanalysis) time.  Fit / forecast rows
+        # Solver edge: last solver (reanalysis) time.  Fit rows
         # are only used AFTER it -- before the edge every source is the
         # same reanalysis, so scenarios cannot change the past.
         self._solver_edge = float(np.nanmax(sv_t)) if sv_t.size else -np.inf
@@ -212,33 +208,7 @@ class DragTrackDensity:
             ft_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
                               TJ70_lm=lm_sc_arr)
 
-        # ── Extract forecast block (optional) ───────────────────────────
-        if rho_forecast is not None:
-            fc = rho_forecast.get('fit') or {}
-            fc_t = np.array([_to_days(t) for t in fc.get('time_utc', [])], float)
-            fc_rho_main = _as_2d(fc.get('rho_fit'))
-            fc_TJ70_main = _as_1d(fc.get('TJ70_K'))
-            sp_fc = (rho_forecast.get('spatial') or {}).get('fit') or {}
-            fc_lm_main = _as_2d(sp_fc.get('TJ70_lm'))
-            fc_scen: dict[str, dict] = {}
-            for k in SCENARIOS:
-                r_sc = fc.get(f'rho_{k}')
-                lm_sc = sp_fc.get(f'TJ70_lm_{k}')
-                if r_sc is None:
-                    continue
-                r_sc_arr = _as_2d(r_sc)
-                lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else fc_lm_main
-                _TJ70_sc = _regress_tinf(rt_sv_rho400, rt_sv_TJ70, r_sc_arr[:, i400])
-                fc_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
-                                  TJ70_lm=lm_sc_arr)
-        else:
-            fc_t = np.zeros(0, float)
-            fc_rho_main = np.zeros((0, alts.size))
-            fc_TJ70_main = np.zeros(0, float)
-            fc_lm_main = np.zeros((0, 16), float)
-            fc_scen = {}
-
-        # ── Merge per source: solver → fit → forecast ───────────────────
+        # ── Merge per source: solver → fit ──────────────────────────────
         LAT_g, LST_g, w = _sphere_grid()
         self._LAT_g, self._LST_g, self._w = LAT_g, LST_g, w
         self._Y_grid = Y_modes(LAT_g, LST_g)                  # (n_lat, n_lst, 16)
@@ -254,16 +224,9 @@ class DragTrackDensity:
             else:
                 ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['TJ70']
                 ft_l = ft_scen[src]['TJ70_lm']
-            if src == 'baseline' or src not in fc_scen:
-                fc_r = fc_rho_main[:, i400] if fc_rho_main.size else np.zeros(0)
-                fc_T, fc_l = fc_TJ70_main, fc_lm_main
-            else:
-                fc_r = fc_scen[src]['rho400']; fc_T = fc_scen[src]['TJ70']
-                fc_l = fc_scen[src]['TJ70_lm']
             self._sources[src] = self._pack_source(
                 sv_t, sv_rho400, sv_TJ70, sv_lm, sv_K,
-                ft_t, ft_r, ft_T, ft_l,
-                fc_t, fc_r, fc_T, fc_l)
+                ft_t, ft_r, ft_T, ft_l)
 
     # ── Source packer ─────────────────────────────────────────────────────
 
@@ -291,33 +254,24 @@ class DragTrackDensity:
         return K
 
     def _pack_source(self, sv_t, sv_rho, sv_TJ70, sv_lm, sv_K,
-                     ft_t, ft_rho, ft_TJ70, ft_lm,
-                     fc_t, fc_rho, fc_TJ70, fc_lm) -> dict:
-        """Solver reanalysis up to its edge, then fit, then forecast.
+                     ft_t, ft_rho, ft_TJ70, ft_lm) -> dict:
+        """Solver reanalysis up to its edge, then fit.
 
-        Fit / forecast rows at or before the solver edge are dropped (the
-        fit block also carries hindcast rows over the solver window; using
-        them would let scenarios alter the past).  Forecast rows at or
-        before the last fit row are dropped too.
+        Fit rows at or before the solver edge are dropped (the fit block
+        also carries hindcast rows over the solver window; using them
+        would let scenarios alter the past).
         """
         edge = self._solver_edge
         ft_lm = np.asarray(ft_lm, float).reshape(-1, 16)
-        fc_lm = np.asarray(fc_lm, float).reshape(-1, 16)
         fk = ft_t > edge
         ft_t, ft_rho, ft_TJ70 = ft_t[fk], ft_rho[fk], ft_TJ70[fk]
         ft_lm = ft_lm[fk] if ft_lm.shape[0] == fk.size else np.zeros((0, 16))
-        last = max(edge, float(ft_t.max()) if ft_t.size else edge)
-        ck = fc_t > last
-        fc_t, fc_rho, fc_TJ70 = fc_t[ck], fc_rho[ck], fc_TJ70[ck]
-        fc_lm = fc_lm[ck] if fc_lm.shape[0] == ck.size else np.zeros((0, 16))
 
-        t = np.concatenate([sv_t, ft_t, fc_t])
-        rho = np.concatenate([sv_rho, ft_rho, fc_rho])
-        TJ70 = np.concatenate([sv_TJ70, ft_TJ70, fc_TJ70])
-        lm = np.vstack([sv_lm, ft_lm, fc_lm])
-        K = np.concatenate([sv_K,
-                            self._norm_K(ft_rho, ft_TJ70, ft_lm),
-                            self._norm_K(fc_rho, fc_TJ70, fc_lm)])
+        t = np.concatenate([sv_t, ft_t])
+        rho = np.concatenate([sv_rho, ft_rho])
+        TJ70 = np.concatenate([sv_TJ70, ft_TJ70])
+        lm = np.vstack([sv_lm, ft_lm])
+        K = np.concatenate([sv_K, self._norm_K(ft_rho, ft_TJ70, ft_lm)])
         order = np.argsort(t, kind='stable')
         t, rho, TJ70, lm, K = t[order], rho[order], TJ70[order], lm[order], K[order]
         u_t, u_idx = np.unique(t, return_index=True)
@@ -345,8 +299,8 @@ class DragTrackDensity:
             internally to height above the 6371.010 km sphere that the
             DragTrack products use as their altitude reference.
         source : str, one of ``'baseline'`` (default) or a name in
-            :data:`SCENARIOS`.  ``'baseline'`` uses main fit + forecast
-            rho / TJ70_lm; scenario names swap the fit + forecast segments
+            :data:`SCENARIOS`.  ``'baseline'`` uses the main fit
+            rho / TJ70_lm; scenario names swap the fit segment
             (solver segment remains reanalysis in every case).
 
         Returns
@@ -474,45 +428,35 @@ class DragTrackDensity:
     def from_files(
         cls,
         rho_realtime: PathLike | Mapping[str, Any],
-        rho_forecast: PathLike | Mapping[str, Any] | None = None,
-        j70_lut: PathLike | None = None,
         rho_full: PathLike | Mapping[str, Any] | None = None,
+        j70_lut: PathLike | None = None,
     ) -> "DragTrackDensity":
         """Build from filesystem path(s) or already-parsed dict(s)."""
         rt = _load_json(rho_realtime) if not isinstance(rho_realtime, Mapping) \
              else dict(rho_realtime)
-        fc = None
-        if rho_forecast is not None:
-            fc = _load_json(rho_forecast) if not isinstance(rho_forecast, Mapping) \
-                 else dict(rho_forecast)
         fl = None
         if rho_full is not None:
             fl = _load_json(rho_full) if not isinstance(rho_full, Mapping) \
                  else dict(rho_full)
         j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, rho_forecast=fc, j70=j, rho_full=fl)
+        return cls(rho_realtime=rt, rho_full=fl, j70=j)
 
     @classmethod
     def from_url(
         cls,
         rho_realtime_url: str,
-        rho_forecast_url: str | None = None,
-        j70_lut: PathLike | None = None,
         rho_full_url: str | None = None,
+        j70_lut: PathLike | None = None,
     ) -> "DragTrackDensity":
         """Fetch JSON products over HTTP(S)."""
         with urlopen(rho_realtime_url) as r:
             rt = json.load(r)
-        fc = None
-        if rho_forecast_url:
-            with urlopen(rho_forecast_url) as r:
-                fc = json.load(r)
         fl = None
         if rho_full_url:
             with urlopen(rho_full_url) as r:
                 fl = json.load(r)
         j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, rho_forecast=fc, j70=j, rho_full=fl)
+        return cls(rho_realtime=rt, rho_full=fl, j70=j)
 
     # ── Metadata ──────────────────────────────────────────────────────────
 

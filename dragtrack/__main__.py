@@ -7,11 +7,11 @@ Evaluate the density at one point::
     python -m dragtrack rho 2026-09-13T12:00:00Z 45 0 450 \\
         --rho-realtime path/to/dragtrack_rho_realtime.json
 
-Include the forecast and pick a scenario::
+Include the 2014+ history and pick a scenario::
 
-    python -m dragtrack rho 2026-10-15T00:00:00Z 0 0 400 \\
+    python -m dragtrack rho 2026-09-28T00:00:00Z 0 0 400 \\
         --rho-realtime path/to/dragtrack_rho_realtime.json \\
-        --rho-forecast path/to/dragtrack_rho_forecast.json \\
+        --rho-full path/to/dragtrack_rho_full.json \\
         --source extreme
 
 Show what a JSON contains::
@@ -34,7 +34,7 @@ def _looks_like_url(s: str) -> bool:
     return s.startswith('http://') or s.startswith('https://')
 
 
-def _load(m_source: str, fc_source: str | None) -> DragTrackDensity:
+def _load(m_source: str, full_source: str | None) -> DragTrackDensity:
     """Route path-or-URL args to the right loader.  Mix of paths and URLs
     is supported (each source is fetched with the matching method)."""
     import json as _json
@@ -46,15 +46,15 @@ def _load(m_source: str, fc_source: str | None) -> DragTrackDensity:
         with open(s, 'r', encoding='utf-8') as f:
             return _json.load(f)
     rt = _fetch(m_source)
-    fc = _fetch(fc_source) if fc_source else None
-    return DragTrackDensity(rho_realtime=rt, rho_forecast=fc)
+    fl = _fetch(full_source) if full_source else None
+    return DragTrackDensity(rho_realtime=rt, rho_full=fl)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='python -m dragtrack',
         description=('Compute atmospheric density from a DragTrack realtime '
-                     'JSON (and optionally a forecast JSON).'),
+                     'JSON (and optionally the 2014+ history JSON).'),
     )
     p.add_argument('--version', action='version',
                    version=f'dragtrack {__version__}')
@@ -78,14 +78,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rho.add_argument('--rho-realtime', required=True,
                        help=('Path to (or URL of) dragtrack_rho_realtime_*.json. '
                              'Required.'))
-    p_rho.add_argument('--rho-forecast', default=None,
-                       help=('Path to (or URL of) dragtrack_rho_forecast_*.json. '
-                             'Optional; extends the reachable time range by up '
-                             'to 45 days.'))
+    p_rho.add_argument('--rho-full', default=None,
+                       help=('Path to (or URL of) dragtrack_rho_full_*.json. '
+                             'Optional; adds solver history from 2014 for times '
+                             'before the realtime file\'s ~27-day window.'))
     p_rho.add_argument('--source', default='baseline',
                        choices=('baseline',) + SCENARIOS,
                        help=('Which estimate to return.  "baseline" is the '
-                             'best-current forecast; the others are scenarios '
+                             'best-current estimate; the others are scenarios '
                              'holding geomagnetic activity at fixed levels.  '
                              'Default: baseline.'))
     p_rho.add_argument('--json', action='store_true',
@@ -104,7 +104,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_rho(args) -> int:
-    m = _load(args.rho_realtime, args.rho_forecast)
+    m = _load(args.rho_realtime, args.rho_full)
     r = m.rho(args.time, args.lat, args.lon, args.alt, source=args.source)
     if args.json:
         out = {
