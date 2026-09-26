@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence, Tuple, Union
 from urllib.request import urlopen
@@ -111,6 +111,10 @@ class DragTrackDensity:
     rho_forecast : dict, optional
         Parsed forecast JSON.  Extends the reachable time range by up
         to ~45 days.
+    rho_full : dict, optional
+        Parsed historical-archive JSON (``dragtrack_rho_full_*``).  Adds
+        solver history from 2014 onward for times before the realtime
+        file's ~27-day window.
     j70 : J70, optional
         Preloaded Jacchia-70 lookup table.  Loaded from the packaged
         asset if omitted.
@@ -123,6 +127,7 @@ class DragTrackDensity:
         rho_realtime: Mapping[str, Any],
         rho_forecast: Mapping[str, Any] | None = None,
         j70: J70 | None = None,
+        rho_full: Mapping[str, Any] | None = None,
     ) -> None:
         if 'solver' not in rho_realtime:
             raise KeyError(
@@ -156,6 +161,33 @@ class DragTrackDensity:
                 "JSON — the spatial coefficients are missing or wrong-shaped. "
                 "Try downloading the latest.")
 
+        # Scenario TJ70 regression uses the realtime (27 d) solver window,
+        # matching the pipeline recipe.  Keep those before prepending history.
+        rt_sv_rho400, rt_sv_TJ70 = sv_rho400, sv_TJ70
+
+        # ── Optional historical archive (rho_full): prepend solver rows
+        # strictly before the realtime solver window.
+        if rho_full is not None:
+            hs = rho_full['solver']
+            h_t = np.array([_to_days(t) for t in hs['time_utc']], float)
+            h_rho400 = _as_2d(hs['rho'])[:, i400]
+            h_TJ70 = _as_1d(hs['TJ70_K'])
+            h_lm = _as_2d((rho_full.get('spatial', {}).get('solver', {})
+                           .get('TJ70_lm')))
+            if h_lm.shape != (h_t.size, 16):
+                raise ValueError("rho_full JSON: spatial.solver.TJ70_lm "
+                                 "missing or wrong-shaped")
+            keep = h_t < (sv_t.min() if sv_t.size else np.inf)
+            sv_t = np.concatenate([h_t[keep], sv_t])
+            sv_rho400 = np.concatenate([h_rho400[keep], sv_rho400])
+            sv_TJ70 = np.concatenate([h_TJ70[keep], sv_TJ70])
+            sv_lm = np.vstack([h_lm[keep], sv_lm])
+
+        # Solver edge: last solver (reanalysis) time.  Fit / forecast rows
+        # are only used AFTER it -- before the edge every source is the
+        # same reanalysis, so scenarios cannot change the past.
+        self._solver_edge = float(np.nanmax(sv_t)) if sv_t.size else -np.inf
+
         # ── Extract fit block (rho_realtime.fit) ────────────────────────
         ft = rho_realtime.get('fit') or {}
         ft_t = np.array([_to_days(t) for t in ft.get('time_utc', [])], float)
@@ -176,7 +208,7 @@ class DragTrackDensity:
             # against solver rho400 (same recipe as rho_snapshot):
             #   TJ70_sc = interp_from_solver(rho400_sc)
             # Solver truth: (sv_rho400, sv_TJ70).  Log-linear fit.
-            _TJ70_sc = _regress_tinf(sv_rho400, sv_TJ70, r_sc_arr[:, i400])
+            _TJ70_sc = _regress_tinf(rt_sv_rho400, rt_sv_TJ70, r_sc_arr[:, i400])
             ft_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
                               TJ70_lm=lm_sc_arr)
 
@@ -196,7 +228,7 @@ class DragTrackDensity:
                     continue
                 r_sc_arr = _as_2d(r_sc)
                 lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else fc_lm_main
-                _TJ70_sc = _regress_tinf(sv_rho400, sv_TJ70, r_sc_arr[:, i400])
+                _TJ70_sc = _regress_tinf(rt_sv_rho400, rt_sv_TJ70, r_sc_arr[:, i400])
                 fc_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
                                   TJ70_lm=lm_sc_arr)
         else:
@@ -212,67 +244,85 @@ class DragTrackDensity:
         self._Y_grid = Y_modes(LAT_g, LST_g)                  # (n_lat, n_lst, 16)
         self._Y_grid_flat = self._Y_grid.reshape(-1, 16)       # (n_grid, 16)
 
+        # Solver segment is identical for every source: normalize once.
+        sv_K = self._norm_K(sv_rho400, sv_TJ70, sv_lm)
         self._sources: dict[str, dict] = {}
         for src in ('baseline',) + SCENARIOS:
-            if src == 'baseline':
-                ft_r, ft_T, ft_l = (ft_rho_main[:, i400] if ft_rho_main.size else
-                                    np.zeros(0), ft_TJ70_main, ft_lm_main)
-                fc_r, fc_T, fc_l = (fc_rho_main[:, i400] if fc_rho_main.size else
-                                    np.zeros(0), fc_TJ70_main, fc_lm_main)
+            if src == 'baseline' or src not in ft_scen:
+                ft_r = ft_rho_main[:, i400] if ft_rho_main.size else np.zeros(0)
+                ft_T, ft_l = ft_TJ70_main, ft_lm_main
             else:
-                if src in ft_scen:
-                    ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['TJ70']
-                    ft_l = ft_scen[src]['TJ70_lm']
-                else:
-                    # Fall back to baseline if scenario missing in JSON
-                    ft_r = ft_rho_main[:, i400] if ft_rho_main.size else np.zeros(0)
-                    ft_T = ft_TJ70_main; ft_l = ft_lm_main
-                if src in fc_scen:
-                    fc_r = fc_scen[src]['rho400']; fc_T = fc_scen[src]['TJ70']
-                    fc_l = fc_scen[src]['TJ70_lm']
-                else:
-                    fc_r = fc_rho_main[:, i400] if fc_rho_main.size else np.zeros(0)
-                    fc_T = fc_TJ70_main; fc_l = fc_lm_main
+                ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['TJ70']
+                ft_l = ft_scen[src]['TJ70_lm']
+            if src == 'baseline' or src not in fc_scen:
+                fc_r = fc_rho_main[:, i400] if fc_rho_main.size else np.zeros(0)
+                fc_T, fc_l = fc_TJ70_main, fc_lm_main
+            else:
+                fc_r = fc_scen[src]['rho400']; fc_T = fc_scen[src]['TJ70']
+                fc_l = fc_scen[src]['TJ70_lm']
             self._sources[src] = self._pack_source(
-                sv_t, sv_rho400, sv_TJ70, sv_lm,
+                sv_t, sv_rho400, sv_TJ70, sv_lm, sv_K,
                 ft_t, ft_r, ft_T, ft_l,
                 fc_t, fc_r, fc_T, fc_l)
 
     # ── Source packer ─────────────────────────────────────────────────────
 
-    def _pack_source(self, sv_t, sv_rho, sv_TJ70, sv_lm,
+    def _norm_K(self, rho400, TJ70, lm, chunk: int = 2048) -> NDArray:
+        """Per-timestep amplitude K so the sphere-average of
+        K*J70(400, TJ70*(1+sum lm*Y)) equals rho400.  Vectorized in chunks."""
+        n_t = len(rho400)
+        K = np.full(n_t, np.nan)
+        if n_t == 0:
+            return K
+        lm = np.asarray(lm, float).reshape(-1, 16)
+        w = self._w.ravel()
+        wsum = float(w.sum())
+        Yg = self._Y_grid_flat                                  # (n_grid, 16)
+        ok = (np.isfinite(TJ70) & np.isfinite(rho400) & (rho400 > 0)
+              & np.all(np.isfinite(lm), axis=1))
+        idx = np.where(ok)[0]
+        for i0 in range(0, idx.size, chunk):
+            ii = idx[i0:i0 + chunk]
+            T_g = TJ70[ii, None] * (1.0 + lm[ii] @ Yg.T)         # (n, n_grid)
+            r_g = self.j70(np.full(T_g.shape, 400.0), T_g)
+            m = (r_g * w).sum(axis=1) / wsum
+            good = m > 0
+            K[ii[good]] = rho400[ii[good]] / m[good]
+        return K
+
+    def _pack_source(self, sv_t, sv_rho, sv_TJ70, sv_lm, sv_K,
                      ft_t, ft_rho, ft_TJ70, ft_lm,
                      fc_t, fc_rho, fc_TJ70, fc_lm) -> dict:
-        """Merge the reanalysis + fit + forecast segments and precompute
-        the per-timestep normalization used by :meth:`rho`."""
+        """Solver reanalysis up to its edge, then fit, then forecast.
+
+        Fit / forecast rows at or before the solver edge are dropped (the
+        fit block also carries hindcast rows over the solver window; using
+        them would let scenarios alter the past).  Forecast rows at or
+        before the last fit row are dropped too.
+        """
+        edge = self._solver_edge
+        ft_lm = np.asarray(ft_lm, float).reshape(-1, 16)
+        fc_lm = np.asarray(fc_lm, float).reshape(-1, 16)
+        fk = ft_t > edge
+        ft_t, ft_rho, ft_TJ70 = ft_t[fk], ft_rho[fk], ft_TJ70[fk]
+        ft_lm = ft_lm[fk] if ft_lm.shape[0] == fk.size else np.zeros((0, 16))
+        last = max(edge, float(ft_t.max()) if ft_t.size else edge)
+        ck = fc_t > last
+        fc_t, fc_rho, fc_TJ70 = fc_t[ck], fc_rho[ck], fc_TJ70[ck]
+        fc_lm = fc_lm[ck] if fc_lm.shape[0] == ck.size else np.zeros((0, 16))
+
         t = np.concatenate([sv_t, ft_t, fc_t])
         rho = np.concatenate([sv_rho, ft_rho, fc_rho])
         TJ70 = np.concatenate([sv_TJ70, ft_TJ70, fc_TJ70])
-        lm_list = [x for x in (sv_lm, ft_lm, fc_lm) if x.shape[0] > 0]
-        lm = np.vstack(lm_list) if lm_list else np.zeros((0, 16), float)
-        # Sort by time; keep first occurrence on ties (solver > fit > forecast).
+        lm = np.vstack([sv_lm, ft_lm, fc_lm])
+        K = np.concatenate([sv_K,
+                            self._norm_K(ft_rho, ft_TJ70, ft_lm),
+                            self._norm_K(fc_rho, fc_TJ70, fc_lm)])
         order = np.argsort(t, kind='stable')
-        t = t[order]; rho = rho[order]; TJ70 = TJ70[order]; lm = lm[order]
+        t, rho, TJ70, lm, K = t[order], rho[order], TJ70[order], lm[order], K[order]
         u_t, u_idx = np.unique(t, return_index=True)
-        rho, TJ70, lm = rho[u_idx], TJ70[u_idx], lm[u_idx]
-        t = u_t
-
-        # Precompute the per-timestep normalization amplitude.
-        n_t = len(t)
-        n_grid = self._Y_grid_flat.shape[0]
-        alt_400 = np.full(n_grid, 400.0)
-        K = np.full(n_t, np.nan)
-        for i in range(n_t):
-            if not (np.isfinite(TJ70[i]) and np.isfinite(rho[i]) and rho[i] > 0):
-                continue
-            frac = self._Y_grid_flat @ lm[i]                # (n_grid,)
-            TJ70_g = TJ70[i] * (1.0 + frac)
-            r_g = self.j70(alt_400, TJ70_g)
-            w_flat = self._w.ravel()
-            m = float(np.sum(r_g * w_flat) / np.sum(w_flat))
-            if m > 0:
-                K[i] = rho[i] / m
-        return dict(t=t, rho400=rho, TJ70_bg=TJ70, TJ70_lm=lm, K=K)
+        return dict(t=u_t, rho400=rho[u_idx], TJ70_bg=TJ70[u_idx],
+                    TJ70_lm=lm[u_idx], K=K[u_idx])
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -291,7 +341,9 @@ class DragTrackDensity:
         t : ISO-8601 str, ``datetime``, ``np.datetime64``, POSIX-days
             float, or 1-D sequence thereof.  UTC.
         lat_deg, lon_deg : array_like, degrees.
-        alt_km : array_like, geodetic altitude, km.
+        alt_km : array_like, WGS84 geodetic altitude, km.  Converted
+            internally to height above the 6371.010 km sphere that the
+            DragTrack products use as their altitude reference.
         source : str, one of ``'baseline'`` (default) or a name in
             :data:`SCENARIOS`.  ``'baseline'`` uses main fit + forecast
             rho / TJ70_lm; scenario names swap the fit + forecast segments
@@ -300,7 +352,8 @@ class DragTrackDensity:
         Returns
         -------
         float or ndarray
-            Density in kg / m^3.  Scalar if every input is scalar.
+            Density in kg / m^3.  Scalar if every input is scalar.  NaN
+            for times outside the loaded coverage (see :attr:`coverage`).
         """
         if source not in self._sources:
             raise ValueError(f'unknown source={source!r}; '
@@ -326,7 +379,7 @@ class DragTrackDensity:
         t_days, ut_h = _vec_time_features(np.ravel(t_arr).tolist())
         lat_f = np.ravel(lat).astype(float)
         lon_f = np.ravel(lon).astype(float)
-        alt_f = np.ravel(alt).astype(float)
+        alt_f = _geodetic_to_sphere_height(lat_f, np.ravel(alt).astype(float))
         lst_h = (ut_h + lon_f / 15.0) % 24.0
 
         s = self._sources[source]
@@ -423,6 +476,7 @@ class DragTrackDensity:
         rho_realtime: PathLike | Mapping[str, Any],
         rho_forecast: PathLike | Mapping[str, Any] | None = None,
         j70_lut: PathLike | None = None,
+        rho_full: PathLike | Mapping[str, Any] | None = None,
     ) -> "DragTrackDensity":
         """Build from filesystem path(s) or already-parsed dict(s)."""
         rt = _load_json(rho_realtime) if not isinstance(rho_realtime, Mapping) \
@@ -431,8 +485,12 @@ class DragTrackDensity:
         if rho_forecast is not None:
             fc = _load_json(rho_forecast) if not isinstance(rho_forecast, Mapping) \
                  else dict(rho_forecast)
+        fl = None
+        if rho_full is not None:
+            fl = _load_json(rho_full) if not isinstance(rho_full, Mapping) \
+                 else dict(rho_full)
         j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, rho_forecast=fc, j70=j)
+        return cls(rho_realtime=rt, rho_forecast=fc, j70=j, rho_full=fl)
 
     @classmethod
     def from_url(
@@ -440,6 +498,7 @@ class DragTrackDensity:
         rho_realtime_url: str,
         rho_forecast_url: str | None = None,
         j70_lut: PathLike | None = None,
+        rho_full_url: str | None = None,
     ) -> "DragTrackDensity":
         """Fetch JSON products over HTTP(S)."""
         with urlopen(rho_realtime_url) as r:
@@ -448,8 +507,12 @@ class DragTrackDensity:
         if rho_forecast_url:
             with urlopen(rho_forecast_url) as r:
                 fc = json.load(r)
+        fl = None
+        if rho_full_url:
+            with urlopen(rho_full_url) as r:
+                fl = json.load(r)
         j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, rho_forecast=fc, j70=j)
+        return cls(rho_realtime=rt, rho_forecast=fc, j70=j, rho_full=fl)
 
     # ── Metadata ──────────────────────────────────────────────────────────
 
@@ -457,6 +520,18 @@ class DragTrackDensity:
     def meta(self) -> dict:
         """The ``meta`` block from the ``rho_realtime`` JSON."""
         return dict(self._meta)
+
+    @property
+    def coverage(self) -> dict:
+        """UTC span covered by the loaded products:
+        ``{'solver_start', 'solver_edge', 'end'}`` as ISO strings.  Queries
+        outside ``[solver_start, end]`` return NaN."""
+        def _iso(d):
+            return (_EPOCH_UTC + timedelta(days=float(d))).strftime('%Y-%m-%dT%H:%M:%SZ')
+        s = self._sources['baseline']
+        return {'solver_start': _iso(s['t'][0]),
+                'solver_edge': _iso(self._solver_edge),
+                'end': _iso(s['t'][-1])}
 
     @property
     def altitude_km(self) -> NDArray[np.float64]:
@@ -479,12 +554,29 @@ def _regress_tinf(rho_truth: NDArray, TJ70_truth: NDArray,
 
 
 def _interp1d(x_new: NDArray, x_ref: NDArray, y_ref: NDArray) -> NDArray:
-    """Edge-held linear interpolation for possibly-NaN reference series."""
+    """Linear interpolation over the finite reference samples.  NaN
+    outside the reference span -- no edge-holding / extrapolation."""
     ok = np.isfinite(y_ref)
     if not np.any(ok):
-        return np.full_like(x_new, np.nan)
-    return np.interp(x_new, x_ref[ok], y_ref[ok],
-                     left=y_ref[ok][0], right=y_ref[ok][-1])
+        return np.full_like(x_new, np.nan, dtype=float)
+    return np.interp(x_new, x_ref[ok], y_ref[ok], left=np.nan, right=np.nan)
+
+
+# Altitude reference of the DragTrack products: height above a sphere of
+# this radius (the TLE/solver mean-Earth radius), NOT WGS84 geodetic.
+_PRODUCT_SPHERE_R_KM = 6371.010
+
+
+def _geodetic_to_sphere_height(lat_deg: NDArray, alt_km: NDArray) -> NDArray:
+    """WGS84 geodetic altitude -> height above the 6371.010 km sphere
+    (the products' altitude reference).  +7 km at the equator, -14 km at
+    the poles for the same geodetic altitude."""
+    la = np.deg2rad(np.asarray(lat_deg, float))
+    s_, c_ = np.sin(la), np.cos(la)
+    N = _WGS84_A_KM / np.sqrt(1.0 - _WGS84_E2 * s_ * s_)
+    rho_xy = (N + alt_km) * c_
+    z = (N * (1.0 - _WGS84_E2) + alt_km) * s_
+    return np.hypot(rho_xy, z) - _PRODUCT_SPHERE_R_KM
 
 
 _WGS84_A_KM = 6378.137

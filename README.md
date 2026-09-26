@@ -10,15 +10,15 @@ m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
 rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)
 ```
 
-The package ships a bundled Jacchia-1970 altitude profile lookup table and reads two
-DragTrack JSON data products
+The package ships a bundled Jacchia-1970 altitude profile lookup table and reads the
+DragTrack JSON data products.
 
 ---
 
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.4.1-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.5.0-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -28,12 +28,13 @@ shipped alongside the data on Hugging Face.
 
 ## Getting the data
 
-Two JSONs describe the atmosphere:
+Three JSONs describe the atmosphere:
 
 | File | Time coverage | Required? |
 |---|---|---|
 | `dragtrack_rho_realtime_*.json` | past ~27 days + short extrapolation | yes |
-| `dragtrack_rho_forecast_*.json` | up to 45 days ahead (SWPC-driven)   | optional |
+| `dragtrack_rho_forecast_*.json` | up to ~45 days ahead (SWPC-driven)   | optional |
+| `dragtrack_rho_full_*.json`     | solver history from 2014-01-01      | optional (needed for times before the realtime window) |
 
 Fetch the latest snapshot from the DragTrack Hugging Face dataset:
 
@@ -42,8 +43,13 @@ BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/m
 m = DragTrackDensity.from_url(
     f'{BASE}/rho_realtime.json',
     rho_forecast_url=f'{BASE}/rho_forecast.json',
+    rho_full_url=f'{BASE}/rho_full.json',      # optional: 2014+ history
 )
+print(m.coverage)   # {'solver_start': ..., 'solver_edge': ..., 'end': ...}
 ```
+
+Queries outside `m.coverage` (`solver_start` → `end`) return `NaN` — the
+package never extrapolates or holds the edge value.
 
 Pin to a historic snapshot by swapping `latest/` for a dated directory
 (`2026-09-23/` etc.) — see `manifest.json` on the dataset for the list.
@@ -57,7 +63,11 @@ Or download the files and use `from_files(...)`.
   `datetime`, `np.datetime64`, or numeric days-since-1970 UTC.
 * **Latitude** — WGS84 geodetic, degrees, `[-90, 90]`.
 * **Longitude** — degrees, either `[-180, 180]` or `[0, 360]`.
-* **Altitude** — WGS84 geodetic, km.
+* **Altitude** — WGS84 geodetic, km.  The products' own altitude grid
+  (`altitude_km` in the JSONs) is height above a **6371.010 km sphere**
+  (the TLE solver's mean-Earth radius); the package converts your
+  geodetic altitude to that reference internally (+7 km at the equator,
+  −14 km at the poles for the same geodetic altitude).
 
 ```python
 import numpy as np
@@ -74,13 +84,15 @@ rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=alt)
 
 | Segment    | Where            | Time span                                     | What it is |
 |------------|------------------|-----------------------------------------------|------------|
-| `solver`   | `rho_realtime`   | 2014-01-01 → TLE-edge (~today)                | TLE-based mass density profiles |
+| `solver`   | `rho_realtime` (last ~27 d), `rho_full` (2014-01-01 →) | → solver edge (~1 day behind now) | TLE-based mass density profiles (reanalysis) |
 | `fit`      | `rho_realtime`   | ~27 d back → `max(S_edge, G_edge) + horizon` | Hourly linear regression `rho_zref = a·S(t) + b·G(t) + c` fit against the last 27 d of solver.  Extends past raw-driver edge by 2× LPF RC (S: 48-h RC → +96 h; G: 9-h RC → +18 h) via persist-pad + causal IIR. |
 | `forecast` | `rho_forecast`   | present → +45 d                               | Same fit function, driven with SWPC-predicted S / G (F10.7 → S via local 40-d linear fit; Kp → G via `b + k·exp(Kp/2)` with seeded constants). |
 
-Point queries past the forecast edge fall back to the last-forecast value
-(edge-hold / persistence) — not NaN.  Check `t <= forecast_end` yourself
-if you need to detect out-of-range queries.
+The package uses the **solver** segment up to its edge and the fit /
+forecast segments only after it.  (The fit block also carries hindcast
+rows over the solver window for comparison; the package ignores them, so
+choosing a scenario never changes the past.)  Queries after the end of
+the forecast return `NaN`.
 
 ## Drivers (S, G)
 
@@ -88,8 +100,9 @@ if you need to detect out-of-range queries.
   **GOES-19 EUVS composite** (multi-band extreme-UV integration). F10.7 is used only as a linear proxy to drive the SWPC-forecast extension of `S`
 * `G` — geomagnetic input (`nT`).  Computed from OMNI solar-wind at L1
   via the Newell (2007) merging function
-  `dΦ/dt = V^(4/3) · Bt^(2/3) · sin^(8/3)(|θ|/2)`, boxcar-smoothed,
-  mapped to a pseudo-Ap by a ~30-day rolling linear fit against Kp-Ap,
+  `dΦ/dt = V^(4/3) · Bt^(2/3) · sin^(8/3)(|θ|/2)`, outlier-filtered and
+  boxcar-smoothed hourly, mapped to a pseudo-Ap with fixed calibration
+  constants `clip(3.51e-3·dΦ/dt − 2.59, 0)`, 9-hour low-pass, ×2 to nT,
   then a log-based softplus `λ · log(1 + exp((x − G0) / λ))` with
   `G0 = 30 nT`, `λ = 20 nT` to smooth the transition through low activity.
 
@@ -203,9 +216,10 @@ package handles the rotation to Earth-fixed and the WGS84 conversion
 internally.
 
 **Frame caveat.** `EarthMJ2000Eq` is treated as TEME here —
-only the GMST rotation is applied (no precession / nutation).  For a
-density lookup this is an ECEF position offset of ~50 arcsec at the epoch
-(~1 km at 400 km altitude), well below the atmosphere model's own
+only the GMST rotation is applied (no precession / nutation).  In 2026
+precession since J2000 is ~0.37° (~45 km of along-track position at LEO),
+which is mostly a longitude shift of ~1.5 min of local solar time — a
+negligible density difference next to the atmosphere model's own
 uncertainty (~15-30 % at LEO).  If you need geodetic accuracy better than
 that, pre-transform your ECI state into `EarthFixed` inside GMAT and pass
 `frame='EarthFixed'`.
