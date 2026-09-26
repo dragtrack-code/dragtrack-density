@@ -280,18 +280,12 @@ def test_rho_from_state_vs_sgp4():
     t_md = np.array([mdates.date2num(dt.replace(tzinfo=None))])
     r_ecef = _eci_to_ecef(r_eci, t_md)
     lat_ours, lon_ours, alt_ours = _ecef_to_geodetic(r_ecef[0])
-    # Compare against a hand-derived reference: use sgp4's own geodetic
-    # helper if available; else fall back to a very loose sanity band.
-    try:
-        from sgp4.functions import jday
-        # sgp4 has invjday but not a direct geodetic helper.  Sanity band.
-        R_earth = 6378.137
-        r_mag = float(np.linalg.norm(r_eci))
-        alt_expected = r_mag - R_earth       # spherical Earth approx
-        assert abs(alt_ours - alt_expected) < 25.0, \
-            f'alt mismatch: {alt_ours=} vs sph-Earth {alt_expected=}'
-    except ImportError:
-        pass
+    # sgp4 has no direct geodetic helper; use a loose spherical-Earth band.
+    R_earth = 6378.137
+    r_mag = float(np.linalg.norm(r_eci))
+    alt_expected = r_mag - R_earth       # spherical Earth approx
+    assert abs(alt_ours - alt_expected) < 25.0, \
+        f'alt mismatch: {alt_ours=} vs sph-Earth {alt_expected=}'
     assert -90 <= lat_ours <= 90
     assert -180 <= lon_ours <= 180
     assert 200 < alt_ours < 800
@@ -367,3 +361,35 @@ def test_geodetic_to_sphere_height():
     h = _geodetic_to_sphere_height(np.array([0.0, 90.0]), np.array([400.0, 400.0]))
     assert abs(h[0] - (6378.137 + 400.0 - 6371.010)) < 1e-6      # equator
     assert abs(h[1] - (6356.7523142 + 400.0 - 6371.010)) < 1e-3  # pole
+
+
+# ── v0.6.1: coverage['end'] is the baseline end, per-source ends reported ──
+
+def test_coverage_end_matches_baseline(rho_realtime_dict):
+    """Scenarios run past the baseline rho_fit horizon (real files: ~5 d vs
+    ~2 d).  coverage['end'] must be the baseline end; rho() there is finite
+    and NaN 1 h later, while the scenario keeps going."""
+    import copy
+    from datetime import datetime, timedelta
+    d = copy.deepcopy(rho_realtime_dict)
+    ft = d['fit']
+    row = ft['rho_fit'][0]
+    extra = [f'2026-09-14T{h:02d}:00:00Z' for h in range(12, 24, 3)]
+    ft['time_utc'] = ft['time_utc'] + extra
+    ft['rho_extreme'] = [[3 * x for x in r] for r in ft['rho_fit']] \
+        + [[3 * x for x in row]] * len(extra)
+    ft['rho_fit'] = ft['rho_fit'] + [[None] * len(row)] * len(extra)
+    ft['TJ70_K'] = ft['TJ70_K'] + [850.0] * len(extra)
+    d['spatial']['fit']['time_utc'] = ft['time_utc']
+    d['spatial']['fit']['TJ70_lm'] = [[0.0] * 16 for _ in ft['time_utc']]
+    m = DragTrackDensity.from_files(d)
+    cov = m.coverage
+    assert cov['end'] == '2026-09-14T09:00:00Z'
+    assert cov['end_by_source']['baseline'] == cov['end']
+    assert cov['end_by_source']['extreme'] == '2026-09-14T21:00:00Z'
+    assert set(cov['end_by_source']) == {'baseline', *SCENARIOS}
+    t_end = datetime.fromisoformat(cov['end'].replace('Z', '+00:00'))
+    assert np.isfinite(m.rho(t_end, 0.0, 0.0, 400.0))
+    assert np.isnan(m.rho(t_end + timedelta(hours=1), 0.0, 0.0, 400.0))
+    assert np.isfinite(m.rho(t_end + timedelta(hours=1), 0.0, 0.0, 400.0,
+                             source='extreme'))

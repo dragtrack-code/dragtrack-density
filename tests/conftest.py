@@ -9,11 +9,9 @@ env var ``DRAGTRACK_RHO_REALTIME`` points at a real file, the
 """
 from __future__ import annotations
 
-import glob
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 

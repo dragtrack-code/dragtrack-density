@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragtrack"
-version = "0.6.0"
+version = "0.6.1"
 description = "Atmospheric density rho(t, lat, lon, alt) from DragTrack JSON data products."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -47,8 +47,8 @@ dev   = ["pytest>=7", "sgp4>=2.20", "pytest-cov"]
 dragtrack = "dragtrack.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/djgersh/dragtrack-density"
-Issues   = "https://github.com/djgersh/dragtrack-density/issues"
+Homepage = "https://github.com/dangershman/dragtrack-density"
+Issues   = "https://github.com/dangershman/dragtrack-density/issues"
 
 [tool.setuptools]
 include-package-data = true
