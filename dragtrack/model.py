@@ -499,16 +499,16 @@ def _gmst_rad(t_days: NDArray[np.float64]) -> NDArray[np.float64]:
     the sub-second UT1-UTC correction) in days since 1970-01-01 UTC.
     """
     # Days since J2000.0 = 2000-01-01 12:00 UTC = 10957.5 in POSIX-days.
+    # T is the full UT1 epoch (time of day included), so the
+    # 876600 h·T term already carries the Earth's daily rotation — do NOT
+    # add the UT hours again (v0.4.0 did, giving errors up to 180°).
     d = np.asarray(t_days, float) - 10957.5
-    frac = d - np.floor(d)
-    ut_hours = frac * 24.0
     T = d / 36525.0
     gmst_s = (67310.54841
               + (876600.0 * 3600.0 + 8640184.812866) * T
               + 0.093104 * T ** 2
               - 6.2e-6 * T ** 3)
-    gmst_hours = (gmst_s / 3600.0 + ut_hours) % 24.0
-    return np.deg2rad(gmst_hours * 15.0)
+    return np.deg2rad((gmst_s / 240.0) % 360.0)
 
 
 def _eci_to_ecef(r_eci_km: NDArray[np.float64],
