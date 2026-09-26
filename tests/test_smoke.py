@@ -135,14 +135,14 @@ def test_density_missing_spatial_solver_lm_raises(rho_realtime_dict):
 
 # ── Scenarios ─────────────────────────────────────────────────────────────
 
-def test_scenario_selection(rho_realtime_dict, rho_forecast_dict):
-    m = DragTrackDensity.from_files(rho_realtime_dict, rho_forecast_dict)
-    # baseline works.
-    r0 = m.rho('2026-09-14T15:00:00Z', 0.0, 0.0, 400.0, source='baseline')
+def test_scenario_selection(rho_realtime_dict):
+    m = DragTrackDensity.from_files(rho_realtime_dict)
+    # baseline works (inside the fit block, past the solver edge).
+    r0 = m.rho('2026-09-14T06:00:00Z', 0.0, 0.0, 400.0, source='baseline')
     assert _RHO_LO < r0 < _RHO_HI
     # every named scenario is accepted.
     for name in SCENARIOS:
-        r = m.rho('2026-09-14T15:00:00Z', 0.0, 0.0, 400.0, source=name)
+        r = m.rho('2026-09-14T06:00:00Z', 0.0, 0.0, 400.0, source=name)
         assert np.isfinite(r) and _RHO_LO < r < _RHO_HI
 
 
@@ -150,15 +150,6 @@ def test_unknown_source_raises(rho_realtime_dict):
     m = DragTrackDensity.from_files(rho_realtime_dict)
     with pytest.raises(ValueError, match='unknown source'):
         m.rho('2026-09-13T12:00:00Z', 0.0, 0.0, 400.0, source='oops')
-
-
-# ── Forecast splice ──────────────────────────────────────────────────────
-
-def test_forecast_splice(rho_realtime_dict, rho_forecast_dict):
-    m = DragTrackDensity.from_files(rho_realtime_dict, rho_forecast_dict)
-    # Query inside the forecast window returns a finite rho.
-    r = m.rho('2026-09-14T18:00:00Z', 0.0, 0.0, 400.0)
-    assert np.isfinite(r) and _RHO_LO < r < _RHO_HI
 
 
 # ── Coordinate helpers + rho_from_state ─────────────────────────────────
@@ -308,10 +299,8 @@ def test_rho_from_state_vs_sgp4():
 
 # ── Real-JSON round-trip (optional) ──────────────────────────────────────
 
-def test_real_json_roundtrip(real_rho_realtime, real_rho_forecast):
-    m = DragTrackDensity.from_files(str(real_rho_realtime),
-                                    rho_forecast=(str(real_rho_forecast)
-                                                    if real_rho_forecast else None))
+def test_real_json_roundtrip(real_rho_realtime):
+    m = DragTrackDensity.from_files(str(real_rho_realtime))
     r = m.rho('2026-09-20T12:00:00Z', 0.0, 0.0, 400.0)
     assert isinstance(r, float)
     assert _RHO_LO < r < _RHO_HI

@@ -6,7 +6,7 @@ Total thermospheric mass density at a point rho(t, lat, lon, alt)`
 from dragtrack import DragTrackDensity
 
 m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
-                                 'dragtrack_rho_forecast.json')
+                                 'dragtrack_rho_full.json')
 rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)
 ```
 
@@ -18,7 +18,7 @@ DragTrack JSON data products.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.5.0-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.0-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -28,12 +28,11 @@ shipped alongside the data on Hugging Face.
 
 ## Getting the data
 
-Three JSONs describe the atmosphere:
+Two JSONs describe the atmosphere:
 
 | File | Time coverage | Required? |
 |---|---|---|
 | `dragtrack_rho_realtime_*.json` | past ~27 days + short extrapolation | yes |
-| `dragtrack_rho_forecast_*.json` | up to ~45 days ahead (SWPC-driven)   | optional |
 | `dragtrack_rho_full_*.json`     | solver history from 2014-01-01      | optional (needed for times before the realtime window) |
 
 Fetch the latest snapshot from the DragTrack Hugging Face dataset:
@@ -42,7 +41,6 @@ Fetch the latest snapshot from the DragTrack Hugging Face dataset:
 BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
 m = DragTrackDensity.from_url(
     f'{BASE}/rho_realtime.json',
-    rho_forecast_url=f'{BASE}/rho_forecast.json',
     rho_full_url=f'{BASE}/rho_full.json',      # optional: 2014+ history
 )
 print(m.coverage)   # {'solver_start': ..., 'solver_edge': ..., 'end': ...}
@@ -79,25 +77,24 @@ rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=alt)
 
 ## JSON Contents
 
-`DragTrackDensity` includes density estimates associated with a TLE-based solver, an extrapolation using measured energy drivers, and a forecast using forecasted energy drivers.
+`DragTrackDensity` includes density estimates associated with a TLE-based solver and an extrapolation using measured energy drivers.
 
 
 | Segment    | Where            | Time span                                     | What it is |
 |------------|------------------|-----------------------------------------------|------------|
 | `solver`   | `rho_realtime` (last ~27 d), `rho_full` (2014-01-01 →) | → solver edge (~1 day behind now) | TLE-based mass density profiles (reanalysis) |
 | `fit`      | `rho_realtime`   | ~27 d back → `max(S_edge, G_edge) + horizon` | Hourly linear regression `rho_zref = a·S(t) + b·G(t) + c` fit against the last 27 d of solver.  Extends past raw-driver edge by 2× LPF RC (S: 48-h RC → +96 h; G: 9-h RC → +18 h) via persist-pad + causal IIR. |
-| `forecast` | `rho_forecast`   | present → +45 d                               | Same fit function, driven with SWPC-predicted S / G (F10.7 → S via local 40-d linear fit; Kp → G via `b + k·exp(Kp/2)` with seeded constants). |
 
-The package uses the **solver** segment up to its edge and the fit /
-forecast segments only after it.  (The fit block also carries hindcast
+The package uses the **solver** segment up to its edge and the fit
+segment only after it.  (The fit block also carries hindcast
 rows over the solver window for comparison; the package ignores them, so
 choosing a scenario never changes the past.)  Queries after the end of
-the forecast return `NaN`.
+the fit return `NaN`.
 
 ## Drivers (S, G)
 
 * `S` — solar-EUV energy input (`W/m²`, 48-h low-pass).  Sourced from the
-  **GOES-19 EUVS composite** (multi-band extreme-UV integration). F10.7 is used only as a linear proxy to drive the SWPC-forecast extension of `S`
+  **GOES-19 EUVS composite** (multi-band extreme-UV integration).
 * `G` — geomagnetic input (`nT`).  Computed from OMNI solar-wind at L1
   via the Newell (2007) merging function
   `dΦ/dt = V^(4/3) · Bt^(2/3) · sin^(8/3)(|θ|/2)`, outlier-filtered and
@@ -109,12 +106,12 @@ the forecast return `NaN`.
 ## Scenarios
 
 `m.rho(..., source=name)` picks which activity scenario is desired.
-Only the future portion (fit + forecast) responds to `source`; historic
+Only the future portion (fit) responds to `source`; historic
 solver data is the same across all sources.
 
 | `source` | Description |
 |---|---|
-| `'baseline'` (default) | Best current estimate driven by observed + SWPC-predicted forcing. |
+| `'baseline'` (default) | Best current estimate driven by observed forcing. |
 | `'solar_only'` | Solar EUV driver (`S`) only, no geomagnetic driver (`G`). |
 | `'quiet'` | Quiet geomagnetic conditions. |
 | `'moderate'` | Moderate geomagnetic activity. |
@@ -131,7 +128,7 @@ solver data is the same across all sources.
 ```
 python -m dragtrack rho <time> <lat> <lon> <alt> \
     --rho-realtime PATH_OR_URL \
-    [--rho-forecast PATH_OR_URL] \
+    [--rho-full PATH_OR_URL] \
     [--source baseline|solar_only|...]
 
 python -m dragtrack info --rho-realtime PATH_OR_URL
@@ -141,8 +138,7 @@ Example:
 
 ```console
 $ python -m dragtrack rho 2026-09-20T12:00:00Z 0 0 400 \
-      --rho-realtime dragtrack_rho_realtime.json \
-      --rho-forecast dragtrack_rho_forecast.json
+      --rho-realtime dragtrack_rho_realtime.json
 3.002456e-12
 ```
 
@@ -235,7 +231,7 @@ import numpy as np
 from dragtrack import DragTrackDensity
 
 m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
-                                 'dragtrack_rho_forecast.json')
+                                 'dragtrack_rho_full.json')
 
 # ephem: n × (t_iso, x_km, y_km, z_km) in EarthMJ2000Eq, exported by GMAT.
 ephem = np.loadtxt('trajectory.csv', dtype=object, delimiter=',',
