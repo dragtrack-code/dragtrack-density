@@ -16,7 +16,7 @@ from urllib.request import urlopen
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .basis import REG_NAMES, Y_modes
+from .basis import Y_modes
 from .j70 import J70
 
 PathLike = Union[str, Path]
@@ -467,15 +467,26 @@ class DragTrackDensity:
 
     @property
     def coverage(self) -> dict:
-        """UTC span covered by the loaded products:
-        ``{'solver_start', 'solver_edge', 'end'}`` as ISO strings.  Queries
-        outside ``[solver_start, end]`` return NaN."""
+        """UTC span covered by the loaded products, as ISO strings.
+
+        ``{'solver_start', 'solver_edge', 'end', 'end_by_source'}``.
+        ``end`` is the last time the default ``source='baseline'`` returns
+        a finite density; ``end_by_source`` maps every source name
+        (``'baseline'`` and each scenario) to its own last finite time --
+        scenarios typically run several days past the baseline end.
+        Queries outside ``[solver_start, end_by_source[source]]`` return
+        NaN."""
         def _iso(d):
+            if not np.isfinite(d):
+                return None
             return (_EPOCH_UTC + timedelta(days=float(d))).strftime('%Y-%m-%dT%H:%M:%SZ')
         s = self._sources['baseline']
+        ends = {name: _iso(_source_end(src))
+                for name, src in self._sources.items()}
         return {'solver_start': _iso(s['t'][0]),
                 'solver_edge': _iso(self._solver_edge),
-                'end': _iso(s['t'][-1])}
+                'end': ends['baseline'],
+                'end_by_source': ends}
 
     @property
     def altitude_km(self) -> NDArray[np.float64]:
@@ -495,6 +506,22 @@ def _regress_tinf(rho_truth: NDArray, TJ70_truth: NDArray,
         return np.full_like(rho_target, np.nan)
     k, b = np.polyfit(np.log10(rho_truth[ok]), TJ70_truth[ok], 1)
     return k * np.log10(np.maximum(rho_target, 1e-30)) + b
+
+
+def _source_end(s: dict) -> float:
+    """Last time (POSIX days) at which :meth:`DragTrackDensity.rho` is
+    finite for packed source ``s``: every interpolated quantity (K,
+    TJ70_bg, each TJ70_lm mode) goes NaN past its own last finite sample
+    (see :func:`_interp1d`), so the end is the earliest of those."""
+    t = s['t']
+    cols = [s['K'], s['TJ70_bg']] + [s['TJ70_lm'][:, k] for k in range(16)]
+    last = []
+    for y in cols:
+        ok = np.isfinite(y)
+        if not np.any(ok):
+            return np.nan
+        last.append(t[ok][-1])
+    return float(min(last))
 
 
 def _interp1d(x_new: NDArray, x_ref: NDArray, y_ref: NDArray) -> NDArray:
@@ -550,8 +577,10 @@ def _gmst_rad(t_days: NDArray[np.float64]) -> NDArray[np.float64]:
 def _eci_to_ecef(r_eci_km: NDArray[np.float64],
                   t_days: NDArray[np.float64]) -> NDArray[np.float64]:
     """Rotate an inertial (EarthMJ2000Eq) position vector into
-    Earth-fixed (ECEF) using GMST.  Precession/nutation not applied —
-    accurate to <1 km for LEO drag-lookup purposes."""
+    Earth-fixed (ECEF) using GMST.  Precession/nutation not applied:
+    in 2026 precession since J2000 is ~0.37 deg (~45 km of along-track
+    position at LEO, mostly a ~1.5 min local-solar-time shift).  Pass
+    ``frame='EarthFixed'`` if you need better geodetic accuracy."""
     theta = _gmst_rad(t_days)
     c, s = np.cos(theta), np.sin(theta)
     x, y, z = r_eci_km[..., 0], r_eci_km[..., 1], r_eci_km[..., 2]
