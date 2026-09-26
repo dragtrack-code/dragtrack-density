@@ -2,7 +2,7 @@
 
 >>> from dragtrack import DragTrackDensity
 >>> m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
-...                                  'dragtrack_rho_forecast.json')
+...                                  'dragtrack_rho_full.json')
 >>> rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)
 
 See the README for coordinate conventions, scenarios, and the CLI.
@@ -13,4 +13,4 @@ from .model import DragTrackDensity, SCENARIOS
 
 __all__ = ['DragTrackDensity', 'SCENARIOS', '__version__']
 
-__version__ = '0.5.0'
+__version__ = '0.6.0'

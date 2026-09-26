@@ -1,7 +1,7 @@
 """pytest fixtures for dragtrack tests.
 
 Fixtures build small synthetic ``dragtrack_rho_realtime.json`` /
-``dragtrack_rho_forecast.json`` dicts that match the v0.9+ SH-16 schema
+dicts that match the v0.9+ SH-16 schema
 (``TJ70_K`` / ``TJ70_lm`` — renamed from ``J70_Tinf_K`` / ``Tinf_lm``),
 so the test-suite runs without any external file dependencies.  If the
 env var ``DRAGTRACK_RHO_REALTIME`` points at a real file, the
@@ -81,38 +81,6 @@ def rho_realtime_dict() -> dict:
     }
 
 
-@pytest.fixture(scope='session')
-def rho_forecast_dict() -> dict:
-    """Small synthetic rho_forecast dict — a fit-only block extending realtime."""
-    times = [f'2026-09-14T{h:02d}:00:00Z' for h in range(12, 24, 3)]
-    n = len(times)
-    alts = [250.0, 300.0, 350.0, 400.0, 450.0, 500.0, 550.0, 600.0]
-    rho_row = [4.3e-11, 1.3e-11, 4.5e-12, 1.7e-12,
-               6.7e-13, 2.8e-13, 1.2e-13, 5.6e-14]
-    rho = [rho_row for _ in range(n)]
-    return {
-        'meta': {'schema_version': '0.9.0-test',
-                 'tle_edge_utc': '2026-09-13T00:00:00Z'},
-        'altitude_km': alts,
-        'fit': {
-            'time_utc': times,
-            'row_type': ['forecast'] * n,
-            'rho_fit':  rho,
-            'uncertainty_fit': [[0.15] * len(alts)] * n,
-            'TJ70_K': [860.0] * n,
-            'S': [0.0] * n,
-            'G': [15.0] * n,
-            'params': {'a': 1e-9, 'b': 1e-14, 'c': -1e-12, 't0': 0.5, 'rmspe': 0.10},
-        },
-        'spatial': {
-            'fit': {
-                'time_utc': times,
-                'TJ70_lm':  _blank_lm(n),
-            },
-            'provenance': {'recipe': 'j70_clim_R0.25_A_res_Y11'},
-        },
-    }
-
 
 @pytest.fixture(scope='session')
 def real_rho_realtime() -> Path:
@@ -134,17 +102,3 @@ def real_rho_realtime() -> Path:
             return fps[-1]
     pytest.skip('No real rho_realtime JSON (v0.9+) available '
                 '(set DRAGTRACK_RHO_REALTIME to enable)')
-
-
-@pytest.fixture(scope='session')
-def real_rho_forecast() -> Path:
-    """Newest real rho_forecast JSON matching v0.9+, or ``None`` if unavailable."""
-    env = os.environ.get('DRAGTRACK_RHO_FORECAST')
-    if env and Path(env).exists():
-        return Path(env)
-    reports = Path('C:/Users/dange/Documents/dragtrack_ops_data/reports/rho_forecast')
-    if reports.exists():
-        fps = sorted(reports.glob('dragtrack_rho_forecast_v0.9*.json'))
-        if fps:
-            return fps[-1]
-    return None
