@@ -195,6 +195,20 @@ def test_ecef_geodetic_round_trip():
     assert abs(alt - alt0) < 1e-6
 
 
+def test_gmst_matches_sgp4_reference():
+    # Independent reference: sgp4's IAU-82 gstime, at several times of day.
+    # (v0.4.0 double-counted UT and was only right at 12:00 UT.)
+    sgp4_prop = pytest.importorskip('sgp4.propagation')
+    from datetime import datetime, timezone
+    for hh in (0, 3, 6, 9, 12, 15, 18, 21):
+        dt = datetime(2026, 9, 24, hh, 17, tzinfo=timezone.utc)
+        t_days = dt.timestamp() / 86400.0
+        ref = sgp4_prop.gstime(t_days + 2440587.5)
+        got = float(_gmst_rad(np.array([t_days]))[0])
+        err = (got - ref + np.pi) % (2 * np.pi) - np.pi
+        assert abs(err) < 1e-6, f'{hh:02d}UT GMST err {np.degrees(err):.3f} deg'
+
+
 def test_eci_ecef_invertible():
     # Rotate an ECEF vector out to ECI via forward GMST, then back with
     # the package's ECI→ECEF; must recover the original to numeric noise.
@@ -226,12 +240,14 @@ def test_rho_from_state_inertial_matches_direct(rho_realtime_dict):
     from datetime import datetime
     m = DragTrackDensity.from_files(rho_realtime_dict)
     lat, lon, alt = 45.0, -120.0, 400.0
-    t_iso = '2026-09-13T12:00:00Z'
-    t_md = np.array([mdates.date2num(datetime(2026, 9, 13, 12, 0, 0))])
+    sgp4_prop = pytest.importorskip('sgp4.propagation')
+    # Off-noon on purpose: the v0.4.0 GMST bug vanished at exactly 12 UT.
+    t_iso = '2026-09-13T05:40:00Z'
+    t_md = np.array([mdates.date2num(datetime(2026, 9, 13, 5, 40, 0))])
     r_direct = m.rho(t_iso, lat, lon, alt)
     r_ecef = _geodetic_to_ecef(lat, lon, alt)
-    # ECEF -> ECI via inverse GMST rotation.
-    theta = float(_gmst_rad(t_md)[0])
+    # ECEF -> ECI via inverse rotation using an INDEPENDENT GMST (sgp4).
+    theta = float(sgp4_prop.gstime(float(t_md[0]) + 2440587.5))
     c, s = np.cos(theta), np.sin(theta)
     r_eci = np.array([c * r_ecef[0] - s * r_ecef[1],
                        s * r_ecef[0] + c * r_ecef[1], r_ecef[2]])
