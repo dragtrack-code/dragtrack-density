@@ -93,66 +93,6 @@ if you need to detect out-of-range queries.
   then a log-based softplus `λ · log(1 + exp((x − G0) / λ))` with
   `G0 = 30 nT`, `λ = 20 nT` to smooth the transition through low activity.
 
-## Per-satellite BC (`bc_track/<norad>.json`)
-
-Alongside the atmosphere JSONs, the HF dataset ships a ~30-day per-satellite
-BC time series (`Cd·A/m` in m²/kg) for each tracked satellite, and a
-`reference/bc_track/<norad>.json` archive of historic reentered satellites
-(Tiangong-1 at least — 180 d before its 2018-04-02 reentry, alt 318 → 171 km):
-
-```python
-import json, urllib.request
-BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
-d = json.loads(urllib.request.urlopen(f'{BASE}/bc_track/28485.json').read())    # Swift
-print(d['meta']['satellite'], d['n_records'])
-for r in d['records'][-3:]:
-    print(r['time_utc'], 'BC=', r['BC_m2_kg'],
-                          'rho=', r['rho_kg_m3'], 'vdot=', r['vdot_m_s2'])
-```
-
-Recipe:
-
-    BC = 2 · vdot / (rho_eff · v²)
-
-* `vdot` = Picone et al. [2005] drag deceleration from consecutive raw TLE
-  pairs (mean-motion change divided by an F·v³-weighted time integral,
-  `F = (1 - r·ω·cos(inc)/v)²` = co-rotation factor).
-* `rho_eff` = `Σρ·F·v³ / Σ F·v³` sampled at 5-min steps over the same
-  pair interval — **rho evaluated by `DragTrackDensity.rho()`**, i.e. the
-  same code path a downstream GMAT user runs.  BC + your drag force are
-  therefore self-consistent: computing drag via `library.rho() · BC` on
-  the same orbit reproduces the pair's `vdot` exactly (to sampling
-  precision).
-* `v` = pair-mean orbital speed (m/s), matching Picone's `v₀²` factor in
-  the numerator.
-* Each record includes `state_t1` / `state_t2` (WGS84 geodetic at the
-  bounding TLE epochs) for GMAT coordinate-convention verification.
-
-Quick plot of Swift (28485) BC + drivers over the last month:
-
-```python
-import json, urllib.request, numpy as np
-import matplotlib.pyplot as plt, matplotlib.dates as mdates
-from datetime import datetime
-
-d = json.loads(urllib.request.urlopen(f'{BASE}/bc_track/28485.json').read())
-r = d['records']
-t   = np.array([mdates.date2num(datetime.strptime(x['time_utc'], '%Y-%m-%dT%H:%M:%SZ')) for x in r])
-BC  = np.array([x['BC_m2_kg']  for x in r])
-rho = np.array([x['rho_kg_m3'] for x in r])
-vd  = np.array([x['vdot_m_s2'] for x in r])
-alt = np.array([x['alt_km']    for x in r])
-
-fig, ax = plt.subplots(4, 1, figsize=(11, 8), sharex=True)
-ax[0].plot(t, BC,      'o-'); ax[0].set_ylabel('BC (m^2/kg)')
-ax[0].set_title(f'{d["meta"]["satellite"]["name"]} ({d["meta"]["satellite"]["norad_id"]}) — {d["n_records"]} records')
-ax[1].plot(t, vd*1e6,  'o-'); ax[1].set_ylabel('vdot (µm/s^2)')
-ax[2].semilogy(t, rho, 'o-'); ax[2].set_ylabel('rho (kg/m^3)')
-ax[3].plot(t, alt,     'o-'); ax[3].set_ylabel('alt (km)')
-ax[3].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-fig.autofmt_xdate(); fig.tight_layout(); fig.savefig('swift_bc.png', dpi=120)
-```
-
 ## Scenarios
 
 `m.rho(..., source=name)` picks which activity scenario is desired.
@@ -304,20 +244,6 @@ DragTrack's per-satellite BC estimates are in **m²/kg** — the same
 `Cd·A/m` product GMAT's drag model expects. **Cd is included in this BC** If your GMAT setup takes
 `Cd`, drag area, and mass separately, distribute the product any way
 you like (e.g. `if Cd = 2.2`, `Area/mass = BC / 2.2 m²/kg`).
-
-Per-satellite BC time series (recipe:
-`BC = 2·vdot / (rho_eff · v²)` with `vdot` from Picone et al. [2005] TLE-pair drag
-integration and `rho_eff = Σρ·F·v³ / ΣF·v³` at the same F·v³ weighting)
-are shipped alongside the density JSONs under
-`latest/bc_track/<norad>.json` in the HF dataset:
-
-```python
-import json, urllib.request
-BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
-d = json.loads(urllib.request.urlopen(f'{BASE}/bc_track/28485.json').read())
-for r in d['records'][-3:]:
-    print(r['time_utc'], 'BC=', r['BC_m2_kg'])
-```
 
 ### Velocity convention
 
