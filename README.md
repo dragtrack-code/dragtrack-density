@@ -22,7 +22,7 @@ based on them.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.4-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.5-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -174,7 +174,8 @@ The JSON provides:
 Point density at `(t, lat, lon, alt)` is reconstructed as:
 
 ```
-lst_h    = (UT_hours(t) + lon_deg / 15) mod 24
+lst_h    = apparent local solar time at (t, lon): 12 h where the Sun is overhead
+           (UT + lon/15 corrected by the equation of time, up to ~16 min)
 Y_k      = 16 spherical-harmonic modes evaluated at (lat, lst_h)
 TJ70     = TJ70_bg(t) · (1 + Σ_k TJ70_lm(t, k) · Y_k)
 rho(alt) = K(t) · J70(alt, TJ70)
