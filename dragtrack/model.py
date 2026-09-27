@@ -151,8 +151,7 @@ class DragTrackDensity:
                 "JSON — the spatial coefficients are missing or wrong-shaped. "
                 "Try downloading the latest.")
 
-        # Scenario TJ70 regression uses the realtime (27 d) solver window,
-        # matching the pipeline recipe.  Keep those before prepending history.
+        # Scenario TJ70 is regressed on the realtime solver window only.
         rt_sv_rho400, rt_sv_TJ70 = sv_rho400, sv_TJ70
 
         # ── Optional historical archive (rho_full): prepend solver rows
@@ -194,10 +193,8 @@ class DragTrackDensity:
                 continue
             r_sc_arr = _as_2d(r_sc)
             lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else ft_lm_main
-            # Reconstruct scenario TJ70_bg using log10-linear regression
-            # against solver rho400 (same recipe as rho_snapshot):
-            #   TJ70_sc = interp_from_solver(rho400_sc)
-            # Solver truth: (sv_rho400, sv_TJ70).  Log-linear fit.
+            # TJ70 linear in log10(rho400) over the solver window; equals the
+            # product's fit.TJ70_K_<scenario>.
             _TJ70_sc = _regress_tinf(rt_sv_rho400, rt_sv_TJ70, r_sc_arr[:, i400])
             ft_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
                               TJ70_lm=lm_sc_arr)
@@ -528,10 +525,9 @@ def _gmst_rad(t_days: NDArray[np.float64]) -> NDArray[np.float64]:
     ``t_days`` is UT1 (approximated by UTC — drag lookup doesn't need
     the sub-second UT1-UTC correction) in days since 1970-01-01 UTC.
     """
-    # Days since J2000.0 = 2000-01-01 12:00 UTC = 10957.5 in POSIX-days.
-    # T is the full UT1 epoch (time of day included), so the
-    # 876600 h·T term already carries the Earth's daily rotation — do NOT
-    # add the UT hours again (v0.4.0 did, giving errors up to 180°).
+    # Days since J2000.0 (2000-01-01 12:00 UTC = 10957.5 POSIX days).  T
+    # includes the time of day, so the 876600 h·T term carries the daily
+    # rotation.
     d = np.asarray(t_days, float) - 10957.5
     T = d / 36525.0
     gmst_s = (67310.54841
