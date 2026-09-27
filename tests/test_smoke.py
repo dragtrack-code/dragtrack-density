@@ -380,6 +380,7 @@ def test_rho_evaluated_at_geodetic_height(rho_realtime_dict):
     used unchanged at every latitude (no sphere-height conversion)."""
     import copy
     from dragtrack.basis import Y_modes
+    from dragtrack.model import _apparent_lst_h, _to_days
     # Blank pattern: result must be latitude-independent at fixed geodetic
     # height (the old sphere conversion gave ~+20 % at the pole vs equator).
     m0 = DragTrackDensity.from_files(rho_realtime_dict)
@@ -397,7 +398,7 @@ def test_rho_evaluated_at_geodetic_height(rho_realtime_dict):
     for lat in (0.0, 45.0, 80.0, -89.0):
         for alt in (300.0, 450.0):
             got = m.rho(t, lat, 30.0, alt)
-            lst = (12.0 + 30.0 / 15.0) % 24.0
+            lst = float(_apparent_lst_h(np.array([_to_days(t)]), np.array([30.0]))[0])
             T_pt = s['TJ70_bg'][i] * (1.0 + Y_modes(lat, lst) @ s['TJ70_lm'][i])
             want = s['K'][i] * float(m.j70(alt, T_pt))
             assert abs(got / want - 1.0) < 1e-12, (lat, alt, got, want)
@@ -451,3 +452,20 @@ def test_time_forms_are_utc(rho_realtime_dict):
     ]
     for t in same:
         assert m.rho(t, 45.0, 30.0, 450.0) == pytest.approx(ref, rel=1e-12), t
+
+
+# ── v0.6.5: apparent local solar time ──
+
+def test_apparent_lst_equation_of_time():
+    """Apparent minus mean solar time = equation of time (almanac values:
+    ~+16.4 min early Nov, ~-14.2 min mid Feb, ~0 mid Apr / mid Jun)."""
+    from datetime import datetime
+    from dragtrack.model import _apparent_lst_h
+    for date, eot_min in (((2026, 11, 3), 16.4), ((2026, 2, 11), -14.2),
+                          ((2026, 4, 15), 0.0), ((2026, 6, 13), 0.0)):
+        t = np.array([_posix_days(datetime(*date, 12))])
+        for lon in (-120.0, 0.0, 75.0):
+            mean = (12.0 + lon / 15.0) % 24.0
+            got = float(_apparent_lst_h(t, np.array([lon]))[0])
+            d_min = ((got - mean + 12.0) % 24.0 - 12.0) * 60.0
+            assert abs(d_min - eot_min) < 0.7, (date, lon, d_min)
