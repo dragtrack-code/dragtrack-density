@@ -356,11 +356,46 @@ def test_rho_full_extends_history(rho_realtime_dict):
     assert m.coverage['solver_start'] == '2026-06-01T12:00:00Z'
 
 
-def test_geodetic_to_sphere_height():
-    from dragtrack.model import _geodetic_to_sphere_height
-    h = _geodetic_to_sphere_height(np.array([0.0, 90.0]), np.array([400.0, 400.0]))
-    assert abs(h[0] - (6378.137 + 400.0 - 6371.010)) < 1e-6      # equator
-    assert abs(h[1] - (6356.7523142 + 400.0 - 6371.010)) < 1e-3  # pole
+# ── v0.6.3: J70 Tx form, geodetic height, LUT units ────────────────────
+
+def test_calc_Tx_is_j70_form():
+    T = 1000.0
+    expect = 444.3807 + 0.02385 * T - 392.8292 * np.exp(-0.0021357 * T)
+    assert abs(float(calc_Tx(T)) - expect) < 1e-9
+    assert abs(float(calc_Tx(T)) - 421.8130) < 1e-3
+
+
+def test_j70_units_kg_m3():
+    # ~1e-12 kg/m^3 at 400 km, 850 K (the raw LUT file is g/cm^3).
+    assert 1e-13 < float(J70()(400.0, 850.0)) < 1e-11
+
+
+def test_rho_evaluated_at_geodetic_height(rho_realtime_dict):
+    """rho(lat, alt) == K * J70(alt, TJ70_pt) with alt the geodetic height
+    used unchanged at every latitude (no sphere-height conversion)."""
+    import copy
+    from dragtrack.basis import Y_modes
+    # Blank pattern: result must be latitude-independent at fixed geodetic
+    # height (the old sphere conversion gave ~+20 % at the pole vs equator).
+    m0 = DragTrackDensity.from_files(rho_realtime_dict)
+    t = '2026-09-13T12:00:00Z'          # exactly on a solver sample
+    r = [m0.rho(t, lat, 0.0, 450.0) for lat in (0.0, 45.0, 80.0, 90.0)]
+    np.testing.assert_allclose(r, r[0], rtol=1e-12)
+    # Non-trivial pattern: compare against the core J70 call at alt_km.
+    d = copy.deepcopy(rho_realtime_dict)
+    lm = [0.0] * 16
+    lm[1], lm[2], lm[4] = 0.05, 0.10, -0.03       # Y10, Y11c, Y20
+    d['spatial']['solver']['TJ70_lm'] = [lm] * len(d['solver']['time_utc'])
+    m = DragTrackDensity.from_files(d)
+    s = m._sources['baseline']
+    i = 4                                         # 12:00 row
+    for lat in (0.0, 45.0, 80.0, -89.0):
+        for alt in (300.0, 450.0):
+            got = m.rho(t, lat, 30.0, alt)
+            lst = (12.0 + 30.0 / 15.0) % 24.0
+            T_pt = s['TJ70_bg'][i] * (1.0 + Y_modes(lat, lst) @ s['TJ70_lm'][i])
+            want = s['K'][i] * float(m.j70(alt, T_pt))
+            assert abs(got / want - 1.0) < 1e-12, (lat, alt, got, want)
 
 
 # ── v0.6.1: coverage['end'] is the baseline end, per-source ends reported ──
