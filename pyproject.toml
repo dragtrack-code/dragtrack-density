@@ -46,10 +46,6 @@ dev   = ["pytest>=7", "sgp4>=2.20", "pytest-cov"]
 [project.scripts]
 dragtrack = "dragtrack.__main__:main"
 
-[project.urls]
-Homepage = "https://github.com/dangershman/dragtrack-density"
-Issues   = "https://github.com/dangershman/dragtrack-density/issues"
-
 [tool.setuptools]
 include-package-data = true
 

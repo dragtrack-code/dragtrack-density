@@ -31,8 +31,8 @@ Python >= 3.9, numpy >= 1.20.  Not on PyPI.
 | `rho_full.json` | solver history from 2014 | for times before the realtime window |
 
 `from_files` and `from_url` take local paths, URLs or `.json.gz` files.
-For a past snapshot, replace `latest/` with a dated directory (listed in
-`manifest.json` on the dataset).
+Past `rho_realtime` files are kept in dated directories on the dataset
+(`YYYY-MM-DD/`, versioned file names), listed in `manifest.json`.
 
 `m.coverage` gives the covered span: `solver_start`, `solver_edge` (the
 product's `tle_edge_utc`), `end` (last valid time for the default source)
