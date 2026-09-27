@@ -13,4 +13,4 @@ from .model import DragTrackDensity, SCENARIOS
 
 __all__ = ['DragTrackDensity', 'SCENARIOS', '__version__']
 
-__version__ = '0.6.3'
+__version__ = '0.6.4'

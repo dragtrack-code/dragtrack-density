@@ -16,6 +16,14 @@ _RHO_LO = 1e-16
 _RHO_HI = 1e-6
 
 
+def _posix_days(dt):
+    """Days since 1970-01-01 UTC; naive datetimes are UTC."""
+    from datetime import timezone
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp() / 86400.0
+
+
 def test_module_metadata():
     assert dragtrack.__version__
     assert isinstance(REG_NAMES, tuple)
@@ -203,9 +211,8 @@ def test_gmst_matches_sgp4_reference():
 def test_eci_ecef_invertible():
     # Rotate an ECEF vector out to ECI via forward GMST, then back with
     # the package's ECI→ECEF; must recover the original to numeric noise.
-    import matplotlib.dates as mdates
     from datetime import datetime
-    t_md = np.array([mdates.date2num(datetime(2026, 6, 15, 12, 0, 0))])
+    t_md = np.array([_posix_days(datetime(2026, 6, 15, 12, 0, 0))])
     r_ecef = np.array([[6778.0, 0.0, 0.0]])
     theta = _gmst_rad(t_md)[0]
     c, s = float(np.cos(theta)), float(np.sin(theta))
@@ -227,14 +234,13 @@ def test_rho_from_state_earthfixed_matches_direct(rho_realtime_dict):
 
 
 def test_rho_from_state_inertial_matches_direct(rho_realtime_dict):
-    import matplotlib.dates as mdates
     from datetime import datetime
     m = DragTrackDensity.from_files(rho_realtime_dict)
     lat, lon, alt = 45.0, -120.0, 400.0
     sgp4_prop = pytest.importorskip('sgp4.propagation')
     # Off-noon on purpose: the v0.4.0 GMST bug vanished at exactly 12 UT.
     t_iso = '2026-09-13T05:40:00Z'
-    t_md = np.array([mdates.date2num(datetime(2026, 9, 13, 5, 40, 0))])
+    t_md = np.array([_posix_days(datetime(2026, 9, 13, 5, 40, 0))])
     r_direct = m.rho(t_iso, lat, lon, alt)
     r_ecef = _geodetic_to_ecef(lat, lon, alt)
     # ECEF -> ECI via inverse rotation using an INDEPENDENT GMST (sgp4).
@@ -261,11 +267,10 @@ def test_rho_from_state_wrong_shape_raises(rho_realtime_dict):
 
 def test_rho_from_state_vs_sgp4():
     """Cross-check ECI→geodetic against sgp4's own conversion."""
-    sgp4 = pytest.importorskip('sgp4')
+    pytest.importorskip('sgp4')
     from sgp4.api import Satrec, WGS84
     from sgp4 import conveniences as _conv
     from datetime import datetime, timezone
-    import matplotlib.dates as mdates
     # A generic ISS-ish TLE.
     l1 = '1 25544U 98067A   26256.50000000  .00000000  00000-0  00000-0 0  9997'
     l2 = '2 25544  51.6400   0.0000 0001000   0.0000   0.0000 15.50000000000019'
@@ -277,7 +282,7 @@ def test_rho_from_state_vs_sgp4():
     if e:
         pytest.skip(f'sgp4 error {e}')
     r_eci = np.asarray(r_eci, float).reshape(1, 3)   # km, TEME (approx J2000 for LEO drag)
-    t_md = np.array([mdates.date2num(dt.replace(tzinfo=None))])
+    t_md = np.array([_posix_days(dt.replace(tzinfo=None))])
     r_ecef = _eci_to_ecef(r_eci, t_md)
     lat_ours, lon_ours, alt_ours = _ecef_to_geodetic(r_ecef[0])
     # sgp4 has no direct geodetic helper; use a loose spherical-Earth band.
@@ -428,3 +433,21 @@ def test_coverage_end_matches_baseline(rho_realtime_dict):
     assert np.isnan(m.rho(t_end + timedelta(hours=1), 0.0, 0.0, 400.0))
     assert np.isfinite(m.rho(t_end + timedelta(hours=1), 0.0, 0.0, 400.0,
                              source='extreme'))
+
+
+# ── v0.6.4: every time form is UTC ──
+
+def test_time_forms_are_utc(rho_realtime_dict):
+    """Naive strings / datetimes are UTC; offset-aware inputs are converted."""
+    from datetime import datetime, timedelta, timezone
+    m = DragTrackDensity.from_files(rho_realtime_dict)
+    ref = m.rho('2026-09-13T12:00:00Z', 45.0, 30.0, 450.0)
+    assert np.isfinite(ref)
+    same = [
+        '2026-09-13T12:00:00',
+        '2026-09-13T14:00:00+02:00',
+        datetime(2026, 9, 13, 12),
+        datetime(2026, 9, 13, 7, tzinfo=timezone(timedelta(hours=-5))),
+    ]
+    for t in same:
+        assert m.rho(t, 45.0, 30.0, 450.0) == pytest.approx(ref, rel=1e-12), t
