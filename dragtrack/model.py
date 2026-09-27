@@ -52,16 +52,9 @@ def _to_days(t: TimeLike) -> float:
     return (_parse_time(t) - _EPOCH_UTC).total_seconds() / 86400.0
 
 
-def _vec_time_features(times: Iterable[TimeLike]) -> Tuple[NDArray, NDArray]:
-    """Return arrays ``(t_days, ut_hours)`` for a sequence of times."""
-    dts = [_parse_time(t) for t in times]
-    n = len(dts)
-    t_days = np.empty(n, float)
-    ut_h = np.empty(n, float)
-    for i, d in enumerate(dts):
-        t_days[i] = (d - _EPOCH_UTC).total_seconds() / 86400.0
-        ut_h[i] = d.hour + d.minute / 60.0 + d.second / 3600.0
-    return t_days, ut_h
+def _vec_to_days(times: Iterable[TimeLike]) -> NDArray[np.float64]:
+    """Days since 1970-01-01 UTC for a sequence of times."""
+    return np.array([_to_days(t) for t in times], float)
 
 
 # ─── JSON parsing helpers ─────────────────────────────────────────────────
@@ -335,11 +328,11 @@ class DragTrackDensity:
             raise ValueError(
                 f'Could not broadcast inputs: t={len(t_arr)} '
                 f'lat={lat.shape} lon={lon.shape} alt={alt.shape}') from e
-        t_days, ut_h = _vec_time_features(np.ravel(t_arr).tolist())
+        t_days = _vec_to_days(np.ravel(t_arr).tolist())
         lat_f = np.ravel(lat).astype(float)
         lon_f = np.ravel(lon).astype(float)
         alt_f = np.ravel(alt).astype(float)       # geodetic height, used as-is
-        lst_h = (ut_h + lon_f / 15.0) % 24.0
+        lst_h = _apparent_lst_h(t_days, lon_f)
 
         s = self._sources[source]
         TJ70_bg = _interp1d(t_days, s['t'], s['TJ70_bg'])
@@ -407,7 +400,7 @@ class DragTrackDensity:
         elif len(t_arr) != n:
             raise ValueError(f't and r_km lengths mismatch '
                              f'(t={len(t_arr)} vs r_km={n})')
-        r_ecef = (_eci_to_ecef(flat_r, _vec_time_features(t_arr)[0])
+        r_ecef = (_eci_to_ecef(flat_r, _vec_to_days(t_arr))
                   if frame == 'EarthMJ2000Eq' else flat_r)
         lat_deg, lon_deg, alt_km = _ecef_to_geodetic(r_ecef)
         out = self.rho(t_arr, lat_deg, lon_deg, alt_km, source=source)
@@ -546,6 +539,26 @@ def _gmst_rad(t_days: NDArray[np.float64]) -> NDArray[np.float64]:
               + 0.093104 * T ** 2
               - 6.2e-6 * T ** 3)
     return np.deg2rad((gmst_s / 240.0) % 360.0)
+
+
+def _sun_ra_rad(t_days: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Apparent solar right ascension (rad), low-precision almanac series
+    (~0.01 deg); the same formula the DragTrack pipeline uses."""
+    n = np.asarray(t_days, float) - 10957.5              # days since J2000.0
+    L = np.deg2rad(280.460 + 0.9856474 * n)              # mean longitude
+    g = np.deg2rad(357.528 + 0.9856003 * n)              # mean anomaly
+    lam = L + np.deg2rad(1.915) * np.sin(g) + np.deg2rad(0.020) * np.sin(2 * g)
+    eps = np.deg2rad(23.439 - 0.0000004 * n)             # obliquity
+    return np.arctan2(np.cos(eps) * np.sin(lam), np.cos(lam))
+
+
+def _apparent_lst_h(t_days: NDArray[np.float64],
+                    lon_deg: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Apparent local solar time (h) from the point's right ascension
+    (GMST + longitude) and the Sun's: 12 h where the Sun is overhead.
+    Differs from UT + lon/15 by the equation of time (up to ~16 min)."""
+    ra = _gmst_rad(t_days) + np.deg2rad(np.asarray(lon_deg, float))
+    return (12.0 + np.degrees(ra - _sun_ra_rad(t_days)) / 15.0) % 24.0
 
 
 def _eci_to_ecef(r_eci_km: NDArray[np.float64],
