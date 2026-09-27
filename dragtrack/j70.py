@@ -1,7 +1,7 @@
 """Jacchia 1970 vertical density lookup table.
 
 The LUT is a precomputed 3D grid ``rho(z, Tinf, Tx)`` (gzip-base64 encoded
-inside a JSON envelope; see :data:`dragtrack.data.j70_density_lookup_tx`).
+inside the packaged JSON ``data/j70_density_lookup_tx.json``).
 ``Tx`` is the inflection-point temperature at 125 km; at query time we set
 ``Tx = calc_Tx(Tinf)`` (the Jacchia-1970 relation, the same one used to
 build the LUT), so rho depends on ``(z, Tinf)`` alone.
@@ -34,8 +34,8 @@ def calc_Tx(Tinf: ArrayLike) -> NDArray[np.float64]:
     """Jacchia-1970 inflection temperature ``Tx`` (at 125 km) from ``Tinf``.
 
     ``Tx = 444.3807 + 0.02385*Tinf - 392.8292*exp(-0.0021357*Tinf)``
-    (the J70 form).  This is the
-    relation the packaged LUT and the DragTrack producer use; the J71 form
+    (Roberts 1971, Eq. 2, for Jacchia 1970).  This is the relation the
+    packaged LUT and the DragTrack producer use; the J71 form
     (``371.6678 + 0.0518806*T - 294.3505*exp(-0.00216222*T)``) is NOT
     consistent with the LUT.
 
@@ -104,11 +104,13 @@ class J70:
         ``alt_km`` is geodetic height above the WGS-84 ellipsoid.
 
         ``TJ70_K`` is Jacchia's ``Tinf``.  Trilinear interpolation in
-        ``log10(rho)``.
+        ``log10(rho)``.  NaN outside the table's altitudes (``z[0]`` to
+        ``z[-1]`` km); ``TJ70_K`` is limited to the table's ``T`` range.
         """
         a = np.asarray(alt_km, float)
         T = np.asarray(TJ70_K, float)
         a, T = np.broadcast_arrays(a, T)
+        outside = (a < self.z[0]) | (a > self.z[-1])
         a = np.clip(a, self.z[0], self.z[-1])
         T = np.clip(T, self.T[0], self.T[-1])
         Tx = np.clip(calc_Tx(T), self.Tx[0], self.Tx[-1])
@@ -130,4 +132,4 @@ class J70:
         c11 = c011 * (1 - fz) + c111 * fz
         c0 = c00 * (1 - fT) + c10 * fT
         c1 = c01 * (1 - fT) + c11 * fT
-        return 10.0 ** (c0 * (1 - fX) + c1 * fX)
+        return np.where(outside, np.nan, 10.0 ** (c0 * (1 - fX) + c1 * fX))

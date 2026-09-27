@@ -18,10 +18,10 @@ publishing results based on them.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.6-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.7-py3-none-any.whl
 ```
 
-Python >= 3.9, numpy >= 1.20.  Not on PyPI.
+Python >= 3.9, numpy >= 1.21.  Not on PyPI.
 
 ## Data
 
@@ -45,7 +45,8 @@ extrapolated.
   since 1970-01-01.  Times without a timezone are UTC.
 * `lat_deg`: geodetic latitude (WGS-84), degrees.
 * `lon_deg`: degrees east, `[-180, 180]` or `[0, 360]`.
-* `alt_km`: geodetic height above the WGS-84 ellipsoid, km.
+* `alt_km`: geodetic height above the WGS-84 ellipsoid, km, 100-1000 km
+  (the Jacchia table; NaN outside).
 
 Arrays broadcast.  All-scalar input returns a float.
 
@@ -66,7 +67,8 @@ geomagnetic activity (`G`) takes over.  `source` picks the fit:
 | `'extreme'` | G at about the 2014-2026 99.9th percentile (upper envelope) |
 
 Scenarios run ~4-5 days past `solver_edge`.  Before `solver_edge` every
-source returns the same values.  `dragtrack.SCENARIOS` lists the scenario
+source returns the same values.  A scenario missing from a file raises an
+error rather than falling back to baseline.  `dragtrack.SCENARIOS` lists the scenario
 names.  The product's `meta` block defines S, G and every field.
 
 ## Method

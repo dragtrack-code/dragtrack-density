@@ -17,5 +17,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[test]" ruff
+      - if: matrix.python-version == '3.9'
+        run: pip install "numpy==1.21.*"      # the declared minimum
       - run: ruff check --select F,E9 dragtrack tests
       - run: pytest -q

@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_info = sub.add_parser(
         'info',
-        help='Print time coverage and provenance of a realtime JSON.',
+        help='Print the timing fields and time coverage of a realtime JSON.',
     )
     p_info.add_argument('--rho-realtime', required=True,
                         help=('Path to (or URL of) dragtrack_rho_realtime_*.json.'))
@@ -113,6 +113,11 @@ def _cmd_info(args) -> int:
         if k in meta:
             print(f'{k:26s}  {meta[k]}')
     print(f'{"altitude_km":26s}  {m.altitude_km.tolist()}')
+    cov = m.coverage
+    for k in ('solver_start', 'solver_edge', 'end'):
+        print(f'{k:26s}  {cov[k]}')
+    for src, end in cov['end_by_source'].items():
+        print(f'{"end[" + src + "]":26s}  {end}')
     return 0
 
 

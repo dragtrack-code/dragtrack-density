@@ -73,17 +73,26 @@ def _as_1d(v) -> NDArray[np.float64]:
     return np.array([np.nan if x is None else float(x) for x in v], float)
 
 
+def _spatial_lm(d: Mapping[str, Any], block: str, times, key: str = 'TJ70_lm') -> NDArray:
+    """spatial.<block>.<key> as (n, 16), checked against the block's times."""
+    sp = ((d.get('spatial') or {}).get(block)) or {}
+    if list(sp.get('time_utc', [])) != list(times):
+        raise ValueError(f"spatial.{block}.time_utc does not match {block}.time_utc")
+    lm = _as_2d(sp.get(key)).reshape(-1, 16) if len(times) else np.zeros((0, 16))
+    if lm.shape != (len(times), 16):
+        raise ValueError(f"spatial.{block}.{key} missing or not (n_time, 16)")
+    return lm
+
+
 # ─── Internal helpers ────────────────────────────────────────────────────
 
-def _sphere_grid(n_lat: int = 36, n_lst: int = 24):
-    """Canonical (lat, lst) grid + cos-lat area weights for sphere means."""
-    lat_edges = np.linspace(-90.0, 90.0, n_lat + 1)
-    lat_c = 0.5 * (lat_edges[:-1] + lat_edges[1:])
-    lst_edges = np.linspace(0.0, 24.0, n_lst + 1)
-    lst_c = 0.5 * (lst_edges[:-1] + lst_edges[1:])
-    LST_g, LAT_g = np.meshgrid(lst_c, lat_c, indexing='xy')
-    w_lat = np.cos(np.deg2rad(lat_c))
-    w = np.broadcast_to(w_lat[:, None], LAT_g.shape).astype(float)
+def _sphere_grid():
+    """(lat, lst) grid + cos-lat weights for globe means: 5 deg latitude
+    centres x 0.5 h local time, the producer's grid."""
+    lat = np.arange(-87.5, 88.0, 5.0)
+    lst = np.arange(0.0, 24.0, 0.5)
+    LAT_g, LST_g = np.meshgrid(lat, lst, indexing='ij')
+    w = np.broadcast_to(np.cos(np.deg2rad(lat))[:, None], LAT_g.shape).astype(float)
     return LAT_g, LST_g, w
 
 
@@ -110,8 +119,6 @@ class DragTrackDensity:
         Preloaded Jacchia-70 lookup table.  Loaded from the packaged
         asset if omitted.
     """
-
-    SCENARIOS: Tuple[str, ...] = SCENARIOS
 
     def __init__(
         self,
@@ -143,16 +150,7 @@ class DragTrackDensity:
         sv_t = np.array([_to_days(t) for t in sv['time_utc']], float)
         sv_rho400 = _as_2d(sv['rho'])[:, i400]
         sv_TJ70 = _as_1d(sv['TJ70_K'])
-        sv_lm = _as_2d((rho_realtime.get('spatial', {}).get('solver', {})
-                        .get('TJ70_lm')))
-        if sv_lm.shape != (sv_t.size, 16):
-            raise ValueError(
-                "This file doesn't look like a current DragTrack realtime "
-                "JSON — the spatial coefficients are missing or wrong-shaped. "
-                "Try downloading the latest.")
-
-        # Scenario TJ70 is regressed on the realtime solver window only.
-        rt_sv_rho400, rt_sv_TJ70 = sv_rho400, sv_TJ70
+        sv_lm = _spatial_lm(rho_realtime, 'solver', sv['time_utc'])
 
         # ── Optional historical archive (rho_full): prepend solver rows
         # strictly before the realtime solver window.
@@ -161,11 +159,9 @@ class DragTrackDensity:
             h_t = np.array([_to_days(t) for t in hs['time_utc']], float)
             h_rho400 = _as_2d(hs['rho'])[:, i400]
             h_TJ70 = _as_1d(hs['TJ70_K'])
-            h_lm = _as_2d((rho_full.get('spatial', {}).get('solver', {})
-                           .get('TJ70_lm')))
-            if h_lm.shape != (h_t.size, 16):
-                raise ValueError("rho_full JSON: spatial.solver.TJ70_lm "
-                                 "missing or wrong-shaped")
+            h_lm = _spatial_lm(rho_full, 'solver', hs['time_utc'])
+            if not np.array_equal(np.asarray(rho_full.get('altitude_km', []), float), alts):
+                raise ValueError("rho_full and rho_realtime altitude_km grids differ")
             keep = h_t < (sv_t.min() if sv_t.size else np.inf)
             sv_t = np.concatenate([h_t[keep], sv_t])
             sv_rho400 = np.concatenate([h_rho400[keep], sv_rho400])
@@ -182,42 +178,29 @@ class DragTrackDensity:
         ft_t = np.array([_to_days(t) for t in ft.get('time_utc', [])], float)
         ft_rho_main = _as_2d(ft.get('rho_fit'))
         ft_TJ70_main = _as_1d(ft.get('TJ70_K'))
-        sp_ft = (rho_realtime.get('spatial') or {}).get('fit') or {}
-        ft_lm_main = _as_2d(sp_ft.get('TJ70_lm'))
-        # Per-scenario overrides in the fit block.
-        ft_scen: dict[str, dict] = {}
+        ft_lm_main = _spatial_lm(rho_realtime, 'fit', ft.get('time_utc', []))
+        # (rho400, TJ70, TJ70_lm) of the fit segment per source; a scenario
+        # is available only when the file carries all three of its arrays.
+        fits = {'baseline': (ft_rho_main[:, i400] if ft_rho_main.size else np.zeros(0),
+                             ft_TJ70_main, ft_lm_main)}
         for k in SCENARIOS:
-            r_sc = ft.get(f'rho_{k}')
-            lm_sc = sp_ft.get(f'TJ70_lm_{k}')
-            if r_sc is None:
+            if f'rho_{k}' not in ft:
                 continue
-            r_sc_arr = _as_2d(r_sc)
-            lm_sc_arr = _as_2d(lm_sc) if lm_sc is not None else ft_lm_main
-            # TJ70 linear in log10(rho400) over the solver window; equals the
-            # product's fit.TJ70_K_<scenario>.
-            _TJ70_sc = _regress_tinf(rt_sv_rho400, rt_sv_TJ70, r_sc_arr[:, i400])
-            ft_scen[k] = dict(rho400=r_sc_arr[:, i400], TJ70=_TJ70_sc,
-                              TJ70_lm=lm_sc_arr)
+            if f'TJ70_K_{k}' not in ft:
+                raise KeyError(f"fit.TJ70_K_{k} missing: the file predates "
+                               "schema 0.10.0; get a current file")
+            fits[k] = (_as_2d(ft[f'rho_{k}'])[:, i400], _as_1d(ft[f'TJ70_K_{k}']),
+                       _spatial_lm(rho_realtime, 'fit', ft['time_utc'], f'TJ70_lm_{k}'))
 
         # ── Merge per source: solver → fit ──────────────────────────────
-        LAT_g, LST_g, w = _sphere_grid()
-        self._LAT_g, self._LST_g, self._w = LAT_g, LST_g, w
-        self._Y_grid = Y_modes(LAT_g, LST_g)                  # (n_lat, n_lst, 16)
-        self._Y_grid_flat = self._Y_grid.reshape(-1, 16)       # (n_grid, 16)
+        LAT_g, LST_g, self._w = _sphere_grid()
+        self._Y_grid_flat = Y_modes(LAT_g, LST_g).reshape(-1, 16)   # (n_grid, 16)
 
         # Solver segment is identical for every source: normalize once.
         sv_K = self._norm_K(sv_rho400, sv_TJ70, sv_lm)
-        self._sources: dict[str, dict] = {}
-        for src in ('baseline',) + SCENARIOS:
-            if src == 'baseline' or src not in ft_scen:
-                ft_r = ft_rho_main[:, i400] if ft_rho_main.size else np.zeros(0)
-                ft_T, ft_l = ft_TJ70_main, ft_lm_main
-            else:
-                ft_r = ft_scen[src]['rho400']; ft_T = ft_scen[src]['TJ70']
-                ft_l = ft_scen[src]['TJ70_lm']
-            self._sources[src] = self._pack_source(
-                sv_t, sv_rho400, sv_TJ70, sv_lm, sv_K,
-                ft_t, ft_r, ft_T, ft_l)
+        self._sources: dict[str, dict] = {
+            src: self._pack_source(sv_t, sv_TJ70, sv_lm, sv_K, ft_t, *f)
+            for src, f in fits.items()}
 
     # ── Source packer ─────────────────────────────────────────────────────
 
@@ -245,7 +228,7 @@ class DragTrackDensity:
             K[ii[good]] = rho400[ii[good]] / m[good]
         return K
 
-    def _pack_source(self, sv_t, sv_rho, sv_TJ70, sv_lm, sv_K,
+    def _pack_source(self, sv_t, sv_TJ70, sv_lm, sv_K,
                      ft_t, ft_rho, ft_TJ70, ft_lm) -> dict:
         """Solver reanalysis up to its edge, then fit.
 
@@ -253,22 +236,14 @@ class DragTrackDensity:
         also carries hindcast rows over the solver window; using them
         would let scenarios alter the past).
         """
-        edge = self._solver_edge
-        ft_lm = np.asarray(ft_lm, float).reshape(-1, 16)
-        fk = ft_t > edge
-        ft_t, ft_rho, ft_TJ70 = ft_t[fk], ft_rho[fk], ft_TJ70[fk]
-        ft_lm = ft_lm[fk] if ft_lm.shape[0] == fk.size else np.zeros((0, 16))
-
+        fk = ft_t > self._solver_edge
+        ft_t, ft_rho, ft_TJ70, ft_lm = ft_t[fk], ft_rho[fk], ft_TJ70[fk], ft_lm[fk]
         t = np.concatenate([sv_t, ft_t])
-        rho = np.concatenate([sv_rho, ft_rho])
         TJ70 = np.concatenate([sv_TJ70, ft_TJ70])
         lm = np.vstack([sv_lm, ft_lm])
         K = np.concatenate([sv_K, self._norm_K(ft_rho, ft_TJ70, ft_lm)])
-        order = np.argsort(t, kind='stable')
-        t, rho, TJ70, lm, K = t[order], rho[order], TJ70[order], lm[order], K[order]
-        u_t, u_idx = np.unique(t, return_index=True)
-        return dict(t=u_t, rho400=rho[u_idx], TJ70_bg=TJ70[u_idx],
-                    TJ70_lm=lm[u_idx], K=K[u_idx])
+        u_t, u_idx = np.unique(t, return_index=True)      # sorted, first of duplicates
+        return dict(t=u_t, TJ70_bg=TJ70[u_idx], TJ70_lm=lm[u_idx], K=K[u_idx])
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -291,12 +266,13 @@ class DragTrackDensity:
         alt_km : array_like, geodetic height above the WGS-84 ellipsoid,
             km.  Density is evaluated at exactly this height and geodetic
             latitude (J70's native coordinates; the products'
-            ``altitude_km`` grid uses the same reference).  No sphere-height
-            conversion is applied.
+            ``altitude_km`` grid uses the same reference).  NaN outside the
+            J70 table (100-1000 km).
         source : str, one of ``'baseline'`` (default) or a name in
             :data:`SCENARIOS`.  ``'baseline'`` uses the main fit
             rho / TJ70_lm; scenario names swap the fit segment
-            (solver segment remains reanalysis in every case).
+            (solver segment remains reanalysis in every case).  Only
+            scenarios present in the file are available.
 
         Returns
         -------
@@ -305,8 +281,8 @@ class DragTrackDensity:
             for times outside the loaded coverage (see :attr:`coverage`).
         """
         if source not in self._sources:
-            raise ValueError(f'unknown source={source!r}; '
-                             f'expected baseline or one of {SCENARIOS}')
+            raise ValueError(f'source={source!r} not available; this file has '
+                             f'{sorted(self._sources)}')
 
         scalar_in = (
             _is_scalar_time(t)
@@ -467,24 +443,12 @@ class DragTrackDensity:
 
     @property
     def altitude_km(self) -> NDArray[np.float64]:
-        """Native altitude grid, km, geodetic height above WGS-84
-        (informational — ``rho()`` accepts any alt)."""
+        """The products' altitude grid, km (geodetic).  ``rho()`` accepts any
+        height within the J70 table (100-1000 km)."""
         return self._alt_grid.copy()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
-
-def _regress_tinf(rho_truth: NDArray, TJ70_truth: NDArray,
-                   rho_target: NDArray) -> NDArray:
-    """Log-linear regression of TJ70 on log10(rho_400) — used internally
-    to reconstruct per-scenario background temperature."""
-    ok = (np.isfinite(rho_truth) & np.isfinite(TJ70_truth)
-          & (rho_truth > 0))
-    if int(ok.sum()) < 3:
-        return np.full_like(rho_target, np.nan)
-    k, b = np.polyfit(np.log10(rho_truth[ok]), TJ70_truth[ok], 1)
-    return k * np.log10(np.maximum(rho_target, 1e-30)) + b
-
 
 def _source_end(s: dict) -> float:
     """Last time (POSIX days) at which :meth:`DragTrackDensity.rho` is
@@ -574,8 +538,8 @@ def _eci_to_ecef(r_eci_km: NDArray[np.float64],
 
 
 def _ecef_to_geodetic(r_ecef_km: NDArray[np.float64]):
-    """WGS84 ECEF (km) → geodetic (lat_deg, lon_deg, alt_km).  Closed
-    form via Bowring (1985)."""
+    """WGS84 ECEF (km) → geodetic (lat_deg, lon_deg, alt_km), Bowring's
+    iteration (5 steps)."""
     x = np.asarray(r_ecef_km[..., 0], float)
     y = np.asarray(r_ecef_km[..., 1], float)
     z = np.asarray(r_ecef_km[..., 2], float)
