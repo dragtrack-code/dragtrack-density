@@ -2,8 +2,10 @@
 
 Wraps the standard :mod:`sgp4` library.  Coordinates are converted from
 SGP4-TEME to ECEF via a GMST-only rotation about the Z axis (IAU-1982
-approximation, sub-arcsecond accuracy), then to geodetic lat/lon/alt using
-the WGS72 ellipsoid.
+approximation, sub-arcsecond accuracy), then to geodetic lat/lon/height
+above the WGS-84 ellipsoid -- the coordinates
+:meth:`dragtrack.DragTrackDensity.rho` expects.  (SGP4 itself still uses
+WGS72 gravity constants; only the geodetic conversion uses WGS-84.)
 
 Accuracy caveats
 ----------------
@@ -32,9 +34,10 @@ except ImportError:  # pragma: no cover - optional dependency
     jday = None
     jday_datetime = None
 
-# WGS72 constants (match SGP4).
-_RE_KM = 6378.135
-_FLAT = 1.0 / 298.26
+# WGS-84 ellipsoid for the geodetic conversion (the density model's height
+# reference; see dragtrack.model).
+_RE_KM = 6378.137
+_FLAT = 1.0 / 298.257223563
 
 TimeLike = Union[str, datetime]
 
@@ -81,7 +84,7 @@ def _teme_to_ecef_batch(r_teme: NDArray[np.float64],
 
 
 def _ecef_to_geodetic(x, y, z) -> Tuple[NDArray, NDArray, NDArray]:
-    """Vectorized WGS72 geodetic conversion — Bowring 5-iter."""
+    """Vectorized WGS-84 geodetic conversion — Bowring 5-iter."""
     a = _RE_KM
     f = _FLAT
     e2 = 2 * f - f * f
@@ -147,7 +150,8 @@ def propagate_tle(l1: str, l2: str, times: Iterable[TimeLike]):
     -------
     tuple
         ``(times, lat_deg, lon_deg, alt_km)``.  Longitude is wrapped to
-        ``[-180, 180)``.  Altitude is above the WGS72 ellipsoid.
+        ``[-180, 180)``.  Altitude is geodetic height above the
+        WGS-84 ellipsoid (pass straight to ``DragTrackDensity.rho``).
     """
     _ensure_sgp4()
     sat = Satrec.twoline2rv(l1, l2)
@@ -179,7 +183,8 @@ def propagate_kepler(*, a_km: float, e: float, inc_deg: float,
     Returns
     -------
     tuple
-        ``(times, lat_deg, lon_deg, alt_km)``.
+        ``(times, lat_deg, lon_deg, alt_km)`` -- WGS-84 geodetic, as in
+        :func:`propagate_tle`.
     """
     _ensure_sgp4()
     from math import pi, sqrt

@@ -22,7 +22,7 @@ based on them.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.2-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.3-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -66,11 +66,16 @@ Or download the files and use `from_files(...)`.
   `datetime`, `np.datetime64`, or numeric days-since-1970 UTC.
 * **Latitude** — WGS84 geodetic, degrees, `[-90, 90]`.
 * **Longitude** — degrees, either `[-180, 180]` or `[0, 360]`.
-* **Altitude** — WGS84 geodetic, km.  The products' own altitude grid
-  (`altitude_km` in the JSONs) is height above a **6371.010 km sphere**
-  (the TLE solver's mean-Earth radius); the package converts your
-  geodetic altitude to that reference internally (+7 km at the equator,
-  −14 km at the poles for the same geodetic altitude).
+* **Altitude** — geodetic height above the WGS-84 ellipsoid, km.
+
+**Height convention.** Density is evaluated at geodetic height above the
+WGS-84 ellipsoid with geodetic latitude — J70's native coordinates; no
+sphere-height conversion is applied.  The products' `altitude_km` grid and
+400 km reference are geodetic heights, and the global `solver` values are
+globe averages at constant geodetic height.  The TLE-derived `alt_mean`,
+`perigee` and `apogee` in `stable_sats` are SMA-based heights above a
+6371.010 km sphere: orbit descriptors only, never used to evaluate
+density.
 
 ```python
 import numpy as np

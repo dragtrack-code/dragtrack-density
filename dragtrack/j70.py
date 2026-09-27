@@ -2,10 +2,13 @@
 
 The LUT is a precomputed 3D grid ``rho(z, Tinf, Tx)`` (gzip-base64 encoded
 inside a JSON envelope; see :data:`dragtrack.data.j70_density_lookup_tx`).
-``Tx`` is the temperature-inflection height parameter from Roberts (1971);
-at query time we set ``Tx = calc_Tx(Tinf)`` so effectively rho depends on
-``(z, Tinf)`` alone through the physically consistent Roberts composition
-formula.
+``Tx`` is the inflection-point temperature at 125 km; at query time we set
+``Tx = calc_Tx(Tinf)`` (the Jacchia-1970 relation, the same one used to
+build the LUT), so rho depends on ``(z, Tinf)`` alone.
+
+``z`` is geodetic height above the WGS-84 ellipsoid (J70's native vertical
+coordinate).  The packaged grid is stored in g/cm^3 (it is a byte-for-byte
+copy of the producer's LUT); :class:`J70` converts to kg/m^3 on load.
 
 Usage
 -----
@@ -28,7 +31,13 @@ PathLike = Union[str, Path]
 
 
 def calc_Tx(Tinf: ArrayLike) -> NDArray[np.float64]:
-    """Roberts (1971) mixed-layer inflection temperature ``Tx`` from ``Tinf``.
+    """Jacchia-1970 inflection temperature ``Tx`` (at 125 km) from ``Tinf``.
+
+    ``Tx = 444.3807 + 0.02385*Tinf - 392.8292*exp(-0.0021357*Tinf)``
+    (the J70 form).  This is the
+    relation the packaged LUT and the DragTrack producer use; the J71 form
+    (``371.6678 + 0.0518806*T - 294.3505*exp(-0.00216222*T)``) is NOT
+    consistent with the LUT.
 
     Parameters
     ----------
@@ -41,7 +50,7 @@ def calc_Tx(Tinf: ArrayLike) -> NDArray[np.float64]:
         ``Tx`` in Kelvin, same shape as ``Tinf``.
     """
     Tinf = np.asarray(Tinf, float)
-    return 371.6678 + 0.0518806 * Tinf - 294.3505 * np.exp(-0.00216222 * Tinf)
+    return 444.3807 + 0.02385 * Tinf - 392.8292 * np.exp(-0.0021357 * Tinf)
 
 
 def _decode(a: dict) -> np.ndarray:
@@ -67,7 +76,9 @@ class J70:
     z, T, Tx : ndarray
         Monotonic axis grids (``z`` in km, ``T`` and ``Tx`` in K).
     rho : ndarray, shape ``(len(z), len(T), len(Tx))``
-        Density grid in kg/m^3.
+        Density grid in kg/m^3 (converted from the file's g/cm^3).
+
+    ``alt_km`` is geodetic height above the WGS-84 ellipsoid.
     """
 
     def __init__(self, path: PathLike | None = None):
@@ -79,7 +90,9 @@ class J70:
         self.z = _decode(d['axes']['z_grid_km'])
         self.T = _decode(d['axes']['Tinf_grid_K'])
         self.Tx = _decode(d['axes']['Tx_grid'])
-        self.rho = _decode(d['rho_grid_kg_m3'])
+        # The file's 'rho_grid_kg_m3' actually holds g/cm^3 (identical to the
+        # producer's .pkl, which multiplies by 1e3); convert here.
+        self.rho = _decode(d['rho_grid_kg_m3']) * 1.0e3
         self._log_rho = np.log10(np.clip(self.rho, 1e-30, None))
         # Guard: axes must be monotonic increasing (required by searchsorted).
         for name, ax in ('z', self.z), ('T', self.T), ('Tx', self.Tx):
@@ -87,7 +100,9 @@ class J70:
                 raise ValueError(f'J70 LUT axis {name!r} is not monotonic increasing')
 
     def __call__(self, alt_km: ArrayLike, TJ70_K: ArrayLike) -> NDArray[np.float64]:
-        """Interpolate ``rho`` at ``(alt_km, TJ70_K)`` — inputs broadcast.
+        """Interpolate ``rho`` (kg/m^3) at ``(alt_km, TJ70_K)`` — inputs broadcast.
+
+        ``alt_km`` is geodetic height above the WGS-84 ellipsoid.
 
         ``TJ70_K`` is Jacchia's ``Tinf`` parameter (same numeric value),
         renamed to match the dragtrack package's naming.  Trilinear

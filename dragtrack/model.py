@@ -231,8 +231,9 @@ class DragTrackDensity:
     # ── Source packer ─────────────────────────────────────────────────────
 
     def _norm_K(self, rho400, TJ70, lm, chunk: int = 2048) -> NDArray:
-        """Per-timestep amplitude K so the sphere-average of
-        K*J70(400, TJ70*(1+sum lm*Y)) equals rho400.  Vectorized in chunks."""
+        """Per-timestep amplitude K so the cos-lat-weighted (lat, LST) mean of
+        K*J70(400, TJ70*(1+sum lm*Y)) equals rho400, both at constant
+        geodetic height 400 km.  Vectorized in chunks."""
         n_t = len(rho400)
         K = np.full(n_t, np.nan)
         if n_t == 0:
@@ -294,10 +295,13 @@ class DragTrackDensity:
         ----------
         t : ISO-8601 str, ``datetime``, ``np.datetime64``, POSIX-days
             float, or 1-D sequence thereof.  UTC.
-        lat_deg, lon_deg : array_like, degrees.
-        alt_km : array_like, WGS84 geodetic altitude, km.  Converted
-            internally to height above the 6371.010 km sphere that the
-            DragTrack products use as their altitude reference.
+        lat_deg : array_like, WGS-84 geodetic latitude, degrees.
+        lon_deg : array_like, degrees east.
+        alt_km : array_like, geodetic height above the WGS-84 ellipsoid,
+            km.  Density is evaluated at exactly this height and geodetic
+            latitude (J70's native coordinates; the products'
+            ``altitude_km`` grid uses the same reference).  No sphere-height
+            conversion is applied.
         source : str, one of ``'baseline'`` (default) or a name in
             :data:`SCENARIOS`.  ``'baseline'`` uses the main fit
             rho / TJ70_lm; scenario names swap the fit segment
@@ -333,7 +337,7 @@ class DragTrackDensity:
         t_days, ut_h = _vec_time_features(np.ravel(t_arr).tolist())
         lat_f = np.ravel(lat).astype(float)
         lon_f = np.ravel(lon).astype(float)
-        alt_f = _geodetic_to_sphere_height(lat_f, np.ravel(alt).astype(float))
+        alt_f = np.ravel(alt).astype(float)       # geodetic height, used as-is
         lst_h = (ut_h + lon_f / 15.0) % 24.0
 
         s = self._sources[source]
@@ -376,7 +380,8 @@ class DragTrackDensity:
             Coordinate system of ``r_km``.  ``'EarthMJ2000Eq'`` is
             GMAT's default inertial frame (Earth-centered J2000 mean
             equator); the package rotates it to Earth-fixed via GMST
-            before computing latitude / longitude / altitude.
+            before computing WGS-84 geodetic latitude / longitude /
+            height, which are passed unchanged to :meth:`rho`.
             ``'EarthFixed'`` is already Earth-body-fixed (ECEF), no
             rotation applied.
         source : str
@@ -490,7 +495,8 @@ class DragTrackDensity:
 
     @property
     def altitude_km(self) -> NDArray[np.float64]:
-        """Native altitude grid, km (informational — ``rho()`` accepts any alt)."""
+        """Native altitude grid, km, geodetic height above WGS-84
+        (informational — ``rho()`` accepts any alt)."""
         return self._alt_grid.copy()
 
 
@@ -533,23 +539,9 @@ def _interp1d(x_new: NDArray, x_ref: NDArray, y_ref: NDArray) -> NDArray:
     return np.interp(x_new, x_ref[ok], y_ref[ok], left=np.nan, right=np.nan)
 
 
-# Altitude reference of the DragTrack products: height above a sphere of
-# this radius (the TLE/solver mean-Earth radius), NOT WGS84 geodetic.
-_PRODUCT_SPHERE_R_KM = 6371.010
-
-
-def _geodetic_to_sphere_height(lat_deg: NDArray, alt_km: NDArray) -> NDArray:
-    """WGS84 geodetic altitude -> height above the 6371.010 km sphere
-    (the products' altitude reference).  +7 km at the equator, -14 km at
-    the poles for the same geodetic altitude."""
-    la = np.deg2rad(np.asarray(lat_deg, float))
-    s_, c_ = np.sin(la), np.cos(la)
-    N = _WGS84_A_KM / np.sqrt(1.0 - _WGS84_E2 * s_ * s_)
-    rho_xy = (N + alt_km) * c_
-    z = (N * (1.0 - _WGS84_E2) + alt_km) * s_
-    return np.hypot(rho_xy, z) - _PRODUCT_SPHERE_R_KM
-
-
+# Height convention: density is evaluated at geodetic height above the
+# WGS-84 ellipsoid with geodetic latitude (J70's native coordinates).  The
+# products' altitude_km grid / 400 km reference are geodetic heights too.
 _WGS84_A_KM = 6378.137
 _WGS84_F = 1.0 / 298.257223563
 _WGS84_E2 = _WGS84_F * (2.0 - _WGS84_F)   # eccentricity squared
