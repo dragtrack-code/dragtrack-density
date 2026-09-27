@@ -18,7 +18,7 @@ publishing results based on them.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.5-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.6-py3-none-any.whl
 ```
 
 Python >= 3.9, numpy >= 1.20.  Not on PyPI.
@@ -103,9 +103,23 @@ time).  For better accuracy, pass `EarthFixed` coordinates.  GMAT's
 `Latitude`, `Longitude` and `Altitude` from an `EarthFixed` coordinate
 system can go straight into `rho()`.
 
-Ballistic coefficients are not part of this package.  Per-satellite
-`Cd·A/m` (m²/kg) is `bc_inv_m2_per_kg` in the `leo_sats` and `stable_sats`
-products.
+## Satellite drag data (ballistic coefficients)
+
+```python
+from dragtrack import load_sats
+
+sats = load_sats(f'{BASE}/leo_sats.json')     # or stable_sats.json
+s = sats[25544]                                 # by NORAD ID
+s['date']                  # UTC day of each value (datetime64[D])
+s['bc_inv_m2_per_kg']      # Cd·A/m, m²/kg, NaN where not available
+```
+
+`leo_sats.json` covers every LEO object with measurable drag;
+`stable_sats.json` only the satellites the density solver uses.  Both hold
+the last ~27 days of daily values: orbit (`sma_km`, `perigee_km`,
+`apogee_km`, ...), `vdot`, orbit-averaged `rho` and `bc_inv_m2_per_kg`, each
+with the product's field name.  Units and definitions are in each file's
+`meta` block.
 
 ## References
 

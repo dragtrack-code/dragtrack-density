@@ -10,7 +10,8 @@ See the README for coordinate conventions, scenarios, and the CLI.
 from __future__ import annotations
 
 from .model import DragTrackDensity, SCENARIOS
+from .sats import load_sats
 
-__all__ = ['DragTrackDensity', 'SCENARIOS', '__version__']
+__all__ = ['DragTrackDensity', 'SCENARIOS', 'load_sats', '__version__']
 
-__version__ = '0.6.5'
+__version__ = '0.6.6'
