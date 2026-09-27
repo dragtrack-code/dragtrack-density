@@ -30,26 +30,6 @@ from typing import Sequence
 from . import DragTrackDensity, SCENARIOS, __version__
 
 
-def _looks_like_url(s: str) -> bool:
-    return s.startswith('http://') or s.startswith('https://')
-
-
-def _load(m_source: str, full_source: str | None) -> DragTrackDensity:
-    """Route path-or-URL args to the right loader.  Mix of paths and URLs
-    is supported (each source is fetched with the matching method)."""
-    import json as _json
-    from urllib.request import urlopen as _urlopen
-    def _fetch(s):
-        if _looks_like_url(s):
-            with _urlopen(s) as r:
-                return _json.load(r)
-        with open(s, 'r', encoding='utf-8') as f:
-            return _json.load(f)
-    rt = _fetch(m_source)
-    fl = _fetch(full_source) if full_source else None
-    return DragTrackDensity(rho_realtime=rt, rho_full=fl)
-
-
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='python -m dragtrack',
@@ -104,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_rho(args) -> int:
-    m = _load(args.rho_realtime, args.rho_full)
+    m = DragTrackDensity.from_files(args.rho_realtime, args.rho_full)
     r = m.rho(args.time, args.lat, args.lon, args.alt, source=args.source)
     if args.json:
         out = {
@@ -120,7 +100,7 @@ def _cmd_rho(args) -> int:
 
 
 def _cmd_info(args) -> int:
-    m = _load(args.rho_realtime, None)
+    m = DragTrackDensity.from_files(args.rho_realtime)
     if args.json:
         json.dump(m.meta, sys.stdout, indent=2, default=str)
         sys.stdout.write('\n')
@@ -132,7 +112,7 @@ def _cmd_info(args) -> int:
     for k in fields:
         if k in meta:
             print(f'{k:26s}  {meta[k]}')
-    print(f'{"altitude_km":26s}  {list(m.altitude_km)}')
+    print(f'{"altitude_km":26s}  {m.altitude_km.tolist()}')
     return 0
 
 
