@@ -1,4 +1,4 @@
-"""Smoke tests for the dragtrack package (v0.2+ schema, SH-16 spatial)."""
+"""Tests for the dragtrack package."""
 from __future__ import annotations
 
 import json
@@ -196,7 +196,6 @@ def test_ecef_geodetic_round_trip():
 
 def test_gmst_matches_sgp4_reference():
     # Independent reference: sgp4's IAU-82 gstime, at several times of day.
-    # (v0.4.0 double-counted UT and was only right at 12:00 UT.)
     sgp4_prop = pytest.importorskip('sgp4.propagation')
     from datetime import datetime, timezone
     for hh in (0, 3, 6, 9, 12, 15, 18, 21):
@@ -238,7 +237,7 @@ def test_rho_from_state_inertial_matches_direct(rho_realtime_dict):
     m = DragTrackDensity.from_files(rho_realtime_dict)
     lat, lon, alt = 45.0, -120.0, 400.0
     sgp4_prop = pytest.importorskip('sgp4.propagation')
-    # Off-noon on purpose: the v0.4.0 GMST bug vanished at exactly 12 UT.
+    # Off-noon on purpose (a UT double-count would vanish at 12 UT).
     t_iso = '2026-09-13T05:40:00Z'
     t_md = np.array([_posix_days(datetime(2026, 9, 13, 5, 40, 0))])
     r_direct = m.rho(t_iso, lat, lon, alt)
@@ -300,13 +299,13 @@ def test_rho_from_state_vs_sgp4():
 
 def test_real_json_roundtrip(real_rho_realtime):
     m = DragTrackDensity.from_files(str(real_rho_realtime))
-    r = m.rho('2026-09-20T12:00:00Z', 0.0, 0.0, 400.0)
+    r = m.rho(m.coverage['solver_edge'], 0.0, 0.0, 400.0)
     assert isinstance(r, float)
     assert _RHO_LO < r < _RHO_HI
     assert m.meta
 
 
-# ── v0.5.0: coverage, solver precedence, history, altitude reference ────
+# ── coverage, solver precedence, history, altitude reference ────
 
 def _with_hindcast_scenario(rt):
     """Copy of the synthetic realtime whose fit block also spans the solver
@@ -361,7 +360,7 @@ def test_rho_full_extends_history(rho_realtime_dict):
     assert m.coverage['solver_start'] == '2026-06-01T12:00:00Z'
 
 
-# ── v0.6.3: J70 Tx form, geodetic height, LUT units ────────────────────
+# ── J70 Tx form, geodetic height, LUT units ────────────────────
 
 def test_calc_Tx_is_j70_form():
     T = 1000.0
@@ -382,7 +381,7 @@ def test_rho_evaluated_at_geodetic_height(rho_realtime_dict):
     from dragtrack.basis import Y_modes
     from dragtrack.model import _apparent_lst_h, _to_days
     # Blank pattern: result must be latitude-independent at fixed geodetic
-    # height (the old sphere conversion gave ~+20 % at the pole vs equator).
+    # height.
     m0 = DragTrackDensity.from_files(rho_realtime_dict)
     t = '2026-09-13T12:00:00Z'          # exactly on a solver sample
     r = [m0.rho(t, lat, 0.0, 450.0) for lat in (0.0, 45.0, 80.0, 90.0)]
@@ -404,7 +403,7 @@ def test_rho_evaluated_at_geodetic_height(rho_realtime_dict):
             assert abs(got / want - 1.0) < 1e-12, (lat, alt, got, want)
 
 
-# ── v0.6.1: coverage['end'] is the baseline end, per-source ends reported ──
+# ── coverage['end'] is the baseline end, per-source ends reported ──
 
 def test_coverage_end_matches_baseline(rho_realtime_dict):
     """Scenarios run past the baseline rho_fit horizon (real files: ~5 d vs
@@ -436,7 +435,7 @@ def test_coverage_end_matches_baseline(rho_realtime_dict):
                              source='extreme'))
 
 
-# ── v0.6.4: every time form is UTC ──
+# ── every time form is UTC ──
 
 def test_time_forms_are_utc(rho_realtime_dict):
     """Naive strings / datetimes are UTC; offset-aware inputs are converted."""
@@ -454,7 +453,7 @@ def test_time_forms_are_utc(rho_realtime_dict):
         assert m.rho(t, 45.0, 30.0, 450.0) == pytest.approx(ref, rel=1e-12), t
 
 
-# ── v0.6.5: apparent local solar time ──
+# ── apparent local solar time ──
 
 def test_apparent_lst_equation_of_time():
     """Apparent minus mean solar time = equation of time (almanac values:

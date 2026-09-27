@@ -1,11 +1,7 @@
 """pytest fixtures for dragtrack tests.
 
-Fixtures build small synthetic ``dragtrack_rho_realtime.json`` /
-dicts that match the v0.9+ SH-16 schema
-(``TJ70_K`` / ``TJ70_lm`` — renamed from ``J70_Tinf_K`` / ``Tinf_lm``),
-so the test-suite runs without any external file dependencies.  If the
-env var ``DRAGTRACK_RHO_REALTIME`` points at a real file, the
-``real_rho_realtime`` fixture opts in.
+A small synthetic rho_realtime dict, so the tests need no external files.
+Set ``DRAGTRACK_RHO_REALTIME`` to a real file to also run the real-file test.
 """
 from __future__ import annotations
 
@@ -82,21 +78,8 @@ def rho_realtime_dict() -> dict:
 
 @pytest.fixture(scope='session')
 def real_rho_realtime() -> Path:
-    """Newest real rho_realtime JSON matching the current schema (v0.9+), or skip.
-
-    Order of precedence: ``DRAGTRACK_RHO_REALTIME`` env var,
-    then the well-known dev-machine reports dir.  Pre-v0.9 snapshots
-    (``J70_Tinf_K`` / ``Tinf_lm`` schema) are hard-break incompatible and
-    are filtered out here — the reader must fail loudly on them if the
-    caller supplies one directly.
-    """
+    """Real rho_realtime JSON named by ``DRAGTRACK_RHO_REALTIME``, or skip."""
     env = os.environ.get('DRAGTRACK_RHO_REALTIME')
     if env and Path(env).exists():
         return Path(env)
-    reports = Path('C:/Users/dange/Documents/dragtrack_ops_data/reports/rho_realtime')
-    if reports.exists():
-        fps = sorted(reports.glob('dragtrack_rho_realtime_v0.9*.json'))
-        if fps:
-            return fps[-1]
-    pytest.skip('No real rho_realtime JSON (v0.9+) available '
-                '(set DRAGTRACK_RHO_REALTIME to enable)')
+    pytest.skip('set DRAGTRACK_RHO_REALTIME to a rho_realtime JSON to enable')

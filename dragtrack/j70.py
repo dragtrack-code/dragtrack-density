@@ -62,8 +62,7 @@ def _decode(a: dict) -> np.ndarray:
 class J70:
     """Callable Jacchia-70 lookup: ``rho_kg_m3 = J70()(alt_km, TJ70_K)``.
 
-    ``TJ70_K`` is the exospheric temperature parameter (Jacchia's ``Tinf``,
-    same numeric value — renamed for consistency with the dragtrack package).
+    ``TJ70_K`` is Jacchia's exospheric temperature ``Tinf``.
 
     Parameters
     ----------
@@ -104,10 +103,8 @@ class J70:
 
         ``alt_km`` is geodetic height above the WGS-84 ellipsoid.
 
-        ``TJ70_K`` is Jacchia's ``Tinf`` parameter (same numeric value),
-        renamed to match the dragtrack package's naming.  Trilinear
-        interpolation is performed on ``log10(rho)`` for numerical
-        stability across ~10 orders of magnitude.
+        ``TJ70_K`` is Jacchia's ``Tinf``.  Trilinear interpolation in
+        ``log10(rho)``.
         """
         a = np.asarray(alt_km, float)
         T = np.asarray(TJ70_K, float)

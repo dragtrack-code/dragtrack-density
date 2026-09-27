@@ -1,23 +1,19 @@
 # dragtrack
 
-Total thermospheric mass density at a point, `rho(t, lat, lon, alt)`.
+Thermospheric mass density at any point, `rho(t, lat, lon, alt)`, from the
+DragTrack JSON products.
 
 ```python
 from dragtrack import DragTrackDensity
 
-m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
-                                 'dragtrack_rho_full.json')
-rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)
+BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
+m = DragTrackDensity.from_url(f'{BASE}/rho_realtime.json', f'{BASE}/rho_full.json')
+rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)   # kg/m^3
 ```
 
-The package ships a bundled Jacchia-1970 altitude profile lookup table and reads the
-DragTrack JSON data products.
-
 The DragTrack products are derived from USSPACECOM data obtained via
-[Space-Track.org](https://www.space-track.org); please cite it when publishing results
-based on them.
-
----
+[Space-Track.org](https://www.space-track.org); please cite it when
+publishing results based on them.
 
 ## Install
 
@@ -25,264 +21,99 @@ based on them.
 pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.5-py3-none-any.whl
 ```
 
-Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
-shipped alongside the data on Hugging Face.
+Python >= 3.9, numpy >= 1.20.  Not on PyPI.
 
----
+## Data
 
-## Getting the data
-
-Two JSONs describe the atmosphere:
-
-| File | Time coverage | Required? |
+| File | Covers | Needed |
 |---|---|---|
-| `dragtrack_rho_realtime_*.json` | past ~27 days + short extrapolation | yes |
-| `dragtrack_rho_full_*.json`     | solver history from 2014-01-01      | optional (needed for times before the realtime window) |
+| `rho_realtime.json` | last ~27 days, then a short forecast | always |
+| `rho_full.json` | solver history from 2014 | for times before the realtime window |
 
-Fetch the latest snapshot from the DragTrack Hugging Face dataset:
+`from_files` and `from_url` take local paths, URLs or `.json.gz` files.
+For a past snapshot, replace `latest/` with a dated directory (listed in
+`manifest.json` on the dataset).
 
-```python
-BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
-m = DragTrackDensity.from_url(
-    f'{BASE}/rho_realtime.json',
-    rho_full_url=f'{BASE}/rho_full.json',      # optional: 2014+ history
-)
-print(m.coverage)   # {'solver_start': ..., 'solver_edge': ..., 'end': ..., 'end_by_source': {...}}
-```
+`m.coverage` gives the covered span: `solver_start`, `solver_edge` (the
+product's `tle_edge_utc`), `end` (last valid time for the default source)
+and `end_by_source`.  Outside it `rho()` returns NaN; nothing is
+extrapolated.
 
-Queries outside `m.coverage` (`solver_start` → `end`) return `NaN` — the
-package never extrapolates or holds the edge value.  `end` is for the
-default `source='baseline'`; scenarios run further (`end_by_source[name]`).
+## Inputs
 
-Pin to a historic snapshot by swapping `latest/` for a dated directory
-(`2026-09-23/` etc.) — see `manifest.json` on the dataset for the list.
-Or download the files and use `from_files(...)` (it takes local paths,
-URLs, or `.json.gz` files).
+* `t`: UTC, as an ISO-8601 string, `datetime`, `np.datetime64` or days
+  since 1970-01-01.  Times without a timezone are UTC.
+* `lat_deg`: geodetic latitude (WGS-84), degrees.
+* `lon_deg`: degrees east, `[-180, 180]` or `[0, 360]`.
+* `alt_km`: geodetic height above the WGS-84 ellipsoid, km.
 
----
+Arrays broadcast.  All-scalar input returns a float.
 
-## Coordinate conventions
+## Sources
 
-* **Time** — UTC.  ISO-8601 strings (`'2026-09-13T12:00:00Z'`),
-  `datetime`, `np.datetime64`, or numeric days-since-1970 UTC.  Times
-  without a timezone are taken as UTC; times with an offset are converted.
-* **Latitude** — WGS84 geodetic, degrees, `[-90, 90]`.
-* **Longitude** — degrees, either `[-180, 180]` or `[0, 360]`.
-* **Altitude** — geodetic height above the WGS-84 ellipsoid, km.
+Up to `solver_edge` the density is the TLE-based solver reanalysis.  After
+it, a fit `rho_400 = a·S + b·G(t − t0) + c` driven by solar EUV (`S`) and
+geomagnetic activity (`G`) takes over.  `source` picks the fit:
 
-**Height convention.** Density is evaluated at geodetic height above the
-WGS-84 ellipsoid with geodetic latitude — J70's native coordinates; no
-sphere-height conversion is applied.  The products' `altitude_km` grid and
-400 km reference are geodetic heights, and the global `solver` values are
-globe averages at constant geodetic height.  The TLE-derived `alt_mean`,
-`perigee` and `apogee` in `stable_sats` are SMA-based heights above a
-6371.010 km sphere: orbit descriptors only, never used to evaluate
-density.
-
-```python
-import numpy as np
-alt = np.linspace(250, 600, 8)
-rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=alt)
-```
-
----
-
-## JSON Contents
-
-`DragTrackDensity` includes density estimates associated with a TLE-based solver and an extrapolation using measured energy drivers.
-
-
-| Segment    | Where            | Time span                                     | What it is |
-|------------|------------------|-----------------------------------------------|------------|
-| `solver`   | `rho_realtime` (last ~27 d), `rho_full` (2014-01-01 →) | → solver edge (~1–2 days behind now) | TLE-based mass density profiles (reanalysis) |
-| `fit`      | `rho_realtime`   | ~27 d back → `max(S_edge, G_edge) + horizon` | Hourly linear regression `rho_zref = a·S(t) + b·G(t − t0) + c` fit against the last 27 d of solver.  Extends past raw-driver edge by 2× LPF RC (S: 48-h RC → +96 h; G: 9-h RC → +18 h) via persist-pad + causal IIR. |
-
-The package uses the **solver** segment up to its edge and the fit
-segment only after it.  (The fit block also carries hindcast
-rows over the solver window for comparison; the package ignores them, so
-choosing a scenario never changes the past.)  Queries after the end of
-the fit return `NaN`.
-
-## Drivers (S, G)
-
-* `S` — solar-EUV energy input (`W/m²`, 48-h low-pass).  Sourced from the
-  **GOES-19 EUVS composite** (multi-band extreme-UV integration).
-* `G` — geomagnetic input (`nT`).  Computed from OMNI solar-wind at L1
-  via the Newell (2007) merging function
-  `dΦ/dt = V^(4/3) · Bt^(2/3) · sin^(8/3)(|θ|/2)`, outlier-filtered and
-  boxcar-smoothed hourly, mapped to a pseudo-Ap with fixed calibration
-  constants `clip(3.51e-3·dΦ/dt − 2.59, 0)`, 9-hour low-pass, ×2 to nT,
-  then a log-based softplus `λ · log(1 + exp((x − G0) / λ))` with
-  `G0 = 30 nT`, `λ = 20 nT` to smooth the transition through low activity.
-
-## Scenarios
-
-`m.rho(..., source=name)` picks which activity scenario is desired.
-Only the future portion (fit) responds to `source`; historic
-solver data is the same across all sources.
-
-| `source` | Description |
+| `source` | Fit uses |
 |---|---|
-| `'baseline'` (default) | Best current estimate driven by observed forcing. |
-| `'solar_only'` | Solar EUV driver (`S`) only, no geomagnetic driver (`G`). |
-| `'quiet'` | Quiet geomagnetic conditions. |
-| `'moderate'` | Moderate geomagnetic activity. |
-| `'intense'` | Intense activity (strong geomagnetic storm). |
-| `'extreme'` | Extreme activity (major storm). |
-| `'median'` | Median activity level over the recent 27-d window. |
+| `'baseline'` (default) | measured S and G; runs ~1-2 days past `solver_edge` |
+| `'solar_only'` | G = 0 (lower envelope) |
+| `'quiet'` | G at about the 2014-2026 median |
+| `'median'` | median G of the past 27 days |
+| `'moderate'` | G at about the 2014-2026 97th percentile |
+| `'intense'` | G at about the 2014-2026 99.4th percentile |
+| `'extreme'` | G at about the 2014-2026 99.9th percentile (upper envelope) |
 
-`dragtrack.SCENARIOS` returns the full tuple of scenario names.
+Scenarios run ~4-5 days past `solver_edge`.  Before `solver_edge` every
+source returns the same values.  `dragtrack.SCENARIOS` lists the scenario
+names.  The product's `meta` block defines S, G and every field.
 
----
+## Method
+
+```
+lst  = apparent local solar time at (t, lon): 12 h where the Sun is overhead
+T    = TJ70(t) · (1 + Σ_k TJ70_lm(t, k) · Y_k(lat, lst))     16 spherical harmonics
+rho  = K(t) · J70(alt, T)
+```
+
+`TJ70(t)` and `TJ70_lm(t, k)` come from the JSON and are interpolated
+linearly in time.  `K(t)` makes the globe-average density at 400 km equal
+the product's global value.  `J70` is the Jacchia (1970) profile, from the
+bundled lookup table.
 
 ## Command line
 
 ```
-python -m dragtrack rho <time> <lat> <lon> <alt> \
-    --rho-realtime PATH_OR_URL \
-    [--rho-full PATH_OR_URL] \
-    [--source baseline|solar_only|...]
-
+python -m dragtrack rho <time> <lat> <lon> <alt> --rho-realtime PATH_OR_URL \
+    [--rho-full PATH_OR_URL] [--source NAME] [--json]
 python -m dragtrack info --rho-realtime PATH_OR_URL
 ```
 
-Example:
-
-```console
-$ python -m dragtrack rho 2026-09-20T12:00:00Z 0 0 400 \
-      --rho-realtime dragtrack_rho_realtime.json
-3.002456e-12
-```
-
-Add `--json` to `rho` for a full record instead of a bare number.
-
----
-
-## How point densities are computed
-
-The JSON provides:
-
-* a **global average** — the horizontally-averaged density at 400 km
-  (`solver.rho[:, i400]`) and the corresponding global mean thermospheric
-  temperature (`solver.TJ70_K`), plus their `fit`-block extensions
-  toward the present and future;
-* a **spatial pattern** — sixteen spherical harmonic coefficients `TJ70_lm[t, k]` that
-  describe how the thermospheric temperature varies over latitude and
-  local solar time as a perturbation on top of the
-  global background.
-
-Point density at `(t, lat, lon, alt)` is reconstructed as:
-
-```
-lst_h    = apparent local solar time at (t, lon): 12 h where the Sun is overhead
-           (UT + lon/15 corrected by the equation of time, up to ~16 min)
-Y_k      = 16 spherical-harmonic modes evaluated at (lat, lst_h)
-TJ70     = TJ70_bg(t) · (1 + Σ_k TJ70_lm(t, k) · Y_k)
-rho(alt) = K(t) · J70(alt, TJ70)
-```
-
-`K(t)` is a per-timestep amplitude that keeps the sphere-average of the
-reconstructed density at 400 km equal to the global background from the
-JSON.  Vertical structure comes from the packaged Jacchia-1970
-lookup table.
-
----
-
-## Using it with GMAT
-
-GMAT (General Mission Analysis Tool) needs density at the spacecraft's
-`(t, lat, lon, alt)`.  You can feed our densities in either as a
-precomputed table or by calling the package at each propagation step.
-The package accepts either a body-fixed or an inertial state vector, so
-you don't have to convert coordinates yourself.
-
-### Coordinates
-
-* Latitude — WGS84 geodetic degrees, matches GMAT's `Latitude`.
-* Longitude — Earth-body-fixed degrees, matches GMAT's `Longitude`
-  extracted from an `EarthFixed` coordinate system.  **Don't use
-  `atan2(y, x)` on an inertial state — that gives right ascension, not
-  longitude.**
-* Altitude — WGS84 geodetic km, matches GMAT's `Altitude`.
-* Time — UTC.  The package accepts an ISO-8601 string or a
-  `datetime`; GMAT users typically convert `UTCGregorian` to that.
-
-Give it geodetic values from an `EarthFixed` coordinate system and you
-match the model's conventions exactly.
-
-### Passing an ECI or ECEF state directly
-
-If you'd rather work with the raw 3-vector, call ``rho_from_state``:
+## Position vectors (GMAT and other propagators)
 
 ```python
-r_km = np.array([x, y, z])   # ECI or ECEF, in km
-rho = m.rho_from_state('2026-09-13T12:00:00Z', r_km,
-                        frame='EarthMJ2000Eq')      # or 'EarthFixed'
+rho = m.rho_from_state(t, r_km, frame='EarthMJ2000Eq')   # or 'EarthFixed'
 ```
 
-`frame='EarthMJ2000Eq'` matches GMAT's default inertial frame; the
-package handles the rotation to Earth-fixed and the WGS84 conversion
-internally.
+`r_km` is `(3,)` or `(N, 3)` in km, with one time per row.  `EarthFixed` is
+used as-is.  `EarthMJ2000Eq` is rotated to Earth-fixed by GMST only (no
+precession or nutation: ~0.37° in 2026, about 1.5 min of local solar
+time).  For better accuracy, pass `EarthFixed` coordinates.  GMAT's
+`Latitude`, `Longitude` and `Altitude` from an `EarthFixed` coordinate
+system can go straight into `rho()`.
 
-**Frame caveat.** `EarthMJ2000Eq` is treated as TEME here —
-only the GMST rotation is applied (no precession / nutation).  In 2026
-precession since J2000 is ~0.37° (~45 km of along-track position at LEO),
-which is mostly a longitude shift of ~1.5 min of local solar time — a
-negligible density difference next to the atmosphere model's own
-uncertainty (~15-30 % at LEO).  If you need geodetic accuracy better than
-that, pre-transform your ECI state into `EarthFixed` inside GMAT and pass
-`frame='EarthFixed'`.
+Ballistic coefficients are not part of this package.  Per-satellite
+`Cd·A/m` (m²/kg) is `bc_inv_m2_per_kg` in the `leo_sats` and `stable_sats`
+products.
 
-### Precomputing a density table for GMAT
-
-The simplest integration: propagate in GMAT with `AtmosphereModel = None`,
-export the ephemeris, evaluate `dragtrack` at each sample, then
-re-propagate with a tabular atmosphere.  A one-shot script:
-
-```python
-import numpy as np
-from dragtrack import DragTrackDensity
-
-m = DragTrackDensity.from_files('dragtrack_rho_realtime.json',
-                                 'dragtrack_rho_full.json')
-
-# ephem: n × (t_iso, x_km, y_km, z_km) in EarthMJ2000Eq, exported by GMAT.
-ephem = np.loadtxt('trajectory.csv', dtype=object, delimiter=',',
-                    skiprows=1)
-t_iso = ephem[:, 0]
-r_km  = ephem[:, 1:4].astype(float)
-
-rho = m.rho_from_state(list(t_iso), r_km, frame='EarthMJ2000Eq')
-np.savetxt('rho_table.csv',
-           np.column_stack([t_iso, rho]), fmt='%s,%.6e',
-           header='time_utc,rho_kg_m3')
-```
-
-Point GMAT's atmosphere model at `rho_table.csv` and re-propagate; the
-drag now uses DragTrack densities.
-
-### Ballistic coefficient input
-
-DragTrack's per-satellite BC estimates are in **m²/kg** — the same
-`Cd·A/m` product GMAT's drag model expects. **Cd is included in this BC** If your GMAT setup takes
-`Cd`, drag area, and mass separately, distribute the product any way
-you like (e.g. `if Cd = 2.2`, `Area/mass = BC / 2.2 m²/kg`).
-
-### Velocity convention
-
-GMAT's drag force uses velocity relative to the co-rotating atmosphere
-(`v_rel`), not the inertial orbital speed.  DragTrack's BC estimation
-integrates over the same co-rotation factor, so the numbers are
-compatible to better than ~1% under normal LEO conditions.
-
----
-
-## Relevant References
+## References
 
 * Gershman (2026), *Enabling Near-Real-Time Thermospheric Density
   Monitoring*, NASA-TM/20260006171.
 * Jacchia, L.G. (1970), *New Static Models of the Thermosphere and
   Exosphere with Empirical Temperature Profiles*, SAO Special Report 313.
-* Picone, J. M., J. T. Emmert, and J. L. Lean (2005), *Thermospheric densities derived from spacecraft orbits: Accurate processing of two-line element sets*, J. Geophys. Res., 110, A03301, doi:10.1029/2004JA010585.
-* Roberts, C.E. (1971), *An analytic model for upper atmosphere densities
-  based upon Jacchia's 1970 models*, Celestial Mechanics 4, 368-377.
+* Picone, J. M., J. T. Emmert, and J. L. Lean (2005), *Thermospheric
+  densities derived from spacecraft orbits: Accurate processing of
+  two-line element sets*, J. Geophys. Res., 110, A03301,
+  doi:10.1029/2004JA010585.
