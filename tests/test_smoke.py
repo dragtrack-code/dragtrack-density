@@ -468,3 +468,29 @@ def test_apparent_lst_equation_of_time():
             got = float(_apparent_lst_h(t, np.array([lon]))[0])
             d_min = ((got - mean + 12.0) % 24.0 - 12.0) * 60.0
             assert abs(d_min - eot_min) < 0.7, (date, lon, d_min)
+
+
+# ── load_sats ──
+
+def test_load_sats():
+    from dragtrack import load_sats
+    d = {'meta': {}, 'time_utc_daily': ['2026-09-01', '2026-09-02', '2026-09-03'],
+         'sats': [{'norad_id': 25544, 'name': 'ISS', 'inc_deg': 51.6,
+                   'bc_inv_m2_per_kg': [0.01, None, 0.012],
+                   'rho': [1e-12, 2e-12, None]},
+                  {'norad_id': 7, 'name': None, 'inc_deg': 98.0,
+                   'bc_inv_m2_per_kg': [None, None, None], 'rho': [None] * 3}]}
+    sats = load_sats(d)
+    assert set(sats) == {25544, 7}
+    s = sats[25544]
+    assert s['name'] == 'ISS' and s['inc_deg'] == 51.6
+    assert s['date'].dtype == np.dtype('datetime64[D]')
+    assert str(s['date'][1]) == '2026-09-02'
+    np.testing.assert_array_equal(np.isnan(s['bc_inv_m2_per_kg']), [False, True, False])
+    assert s['bc_inv_m2_per_kg'][2] == 0.012
+    assert np.all(np.isnan(sats[7]['rho']))
+    with pytest.raises(KeyError):
+        load_sats({'meta': {}})
+    bad = dict(d, sats=[dict(d['sats'][0], rho=[1e-12])])
+    with pytest.raises(ValueError):
+        load_sats(bad)
