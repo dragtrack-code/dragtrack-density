@@ -69,11 +69,10 @@ def test_j70_vectorized():
     assert np.all(np.diff(T_lo) > 0)  # rho at 400 increases with TJ70
 
 
-def test_j70_clips_out_of_range_alt():
+def test_j70_nan_outside_table():
     j = J70()
-    r_lo = j(50.0, 850.0)                 # below LUT floor → clip
-    r_at = j(j.z[0], 850.0)
-    np.testing.assert_allclose(r_lo, r_at)
+    assert np.isnan(j(50.0, 850.0)) and np.isnan(j(j.z[-1] + 1.0, 850.0))
+    assert np.isfinite(j(j.z[0], 850.0)) and np.isfinite(j(j.z[-1], 850.0))
 
 
 def test_calc_Tx_shape_and_range():
@@ -137,7 +136,7 @@ def test_density_missing_solver_raises(rho_realtime_dict):
 def test_density_missing_spatial_solver_lm_raises(rho_realtime_dict):
     bad = json.loads(json.dumps(rho_realtime_dict))
     del bad['spatial']['solver']['TJ70_lm']
-    with pytest.raises(ValueError, match='current DragTrack realtime'):
+    with pytest.raises(ValueError, match='spatial.solver.TJ70_lm'):
         DragTrackDensity.from_files(bad)
 
 
@@ -156,7 +155,7 @@ def test_scenario_selection(rho_realtime_dict):
 
 def test_unknown_source_raises(rho_realtime_dict):
     m = DragTrackDensity.from_files(rho_realtime_dict)
-    with pytest.raises(ValueError, match='unknown source'):
+    with pytest.raises(ValueError, match='not available'):
         m.rho('2026-09-13T12:00:00Z', 0.0, 0.0, 400.0, source='oops')
 
 
@@ -307,20 +306,29 @@ def test_real_json_roundtrip(real_rho_realtime):
 
 # ── coverage, solver precedence, history, altitude reference ────
 
+def _set_fit(d, times, rho_fit, **scen_rho):
+    """Rebuild d's fit + spatial.fit on `times`: every scenario gets its three
+    arrays (rho from scen_rho, else rho_fit), TJ70 850 K, flat pattern."""
+    blank = [[0.0] * 16 for _ in times]
+    ft = {'time_utc': times, 'rho_fit': rho_fit, 'TJ70_K': [850.0] * len(times)}
+    sp = {'time_utc': times, 'TJ70_lm': blank}
+    for k in SCENARIOS:
+        ft[f'rho_{k}'] = scen_rho.get(k, rho_fit)
+        ft[f'TJ70_K_{k}'] = [850.0] * len(times)
+        sp[f'TJ70_lm_{k}'] = blank
+    d['fit'], d['spatial']['fit'] = ft, sp
+    return d
+
+
 def _with_hindcast_scenario(rt):
     """Copy of the synthetic realtime whose fit block also spans the solver
     window (like real files) with a 'extreme' scenario 3x baseline."""
     import copy
     d = copy.deepcopy(rt)
-    ft = d['fit']
     hind = [f'2026-09-13T{h:02d}:00:00Z' for h in range(1, 24, 3)]
-    ft['time_utc'] = hind + ft['time_utc']
-    ft['rho_fit'] = [d['solver']['rho'][0]] * len(hind) + ft['rho_fit']
-    ft['TJ70_K'] = [850.0] * len(hind) + ft['TJ70_K']
-    ft['rho_extreme'] = [[3 * x for x in r] for r in ft['rho_fit']]
-    d['spatial']['fit']['time_utc'] = ft['time_utc']
-    d['spatial']['fit']['TJ70_lm'] = [[0.0] * 16 for _ in ft['time_utc']]
-    return d
+    rows = [d['solver']['rho'][0]] * len(hind) + d['fit']['rho_fit']
+    return _set_fit(d, hind + d['fit']['time_utc'], rows,
+                    extreme=[[3 * x for x in r] for r in rows])
 
 
 def test_scenarios_do_not_change_the_past(rho_realtime_dict):
@@ -415,13 +423,10 @@ def test_coverage_end_matches_baseline(rho_realtime_dict):
     ft = d['fit']
     row = ft['rho_fit'][0]
     extra = [f'2026-09-14T{h:02d}:00:00Z' for h in range(12, 24, 3)]
-    ft['time_utc'] = ft['time_utc'] + extra
-    ft['rho_extreme'] = [[3 * x for x in r] for r in ft['rho_fit']] \
-        + [[3 * x for x in row]] * len(extra)
-    ft['rho_fit'] = ft['rho_fit'] + [[None] * len(row)] * len(extra)
-    ft['TJ70_K'] = ft['TJ70_K'] + [850.0] * len(extra)
-    d['spatial']['fit']['time_utc'] = ft['time_utc']
-    d['spatial']['fit']['TJ70_lm'] = [[0.0] * 16 for _ in ft['time_utc']]
+    _set_fit(d, ft['time_utc'] + extra,
+             ft['rho_fit'] + [[None] * len(row)] * len(extra),
+             extreme=[[3 * x for x in r] for r in ft['rho_fit']]
+             + [[3 * x for x in row]] * len(extra))
     m = DragTrackDensity.from_files(d)
     cov = m.coverage
     assert cov['end'] == '2026-09-14T09:00:00Z'
@@ -494,3 +499,42 @@ def test_load_sats():
     bad = dict(d, sats=[dict(d['sats'][0], rho=[1e-12])])
     with pytest.raises(ValueError):
         load_sats(bad)
+
+
+# ── File consistency checks ──
+
+def test_scenario_needs_published_tj70(rho_realtime_dict):
+    bad = json.loads(json.dumps(rho_realtime_dict))
+    del bad['fit']['TJ70_K_extreme']
+    with pytest.raises(KeyError, match='predates'):
+        DragTrackDensity.from_files(bad)
+
+
+def test_scenario_missing_pattern_raises(rho_realtime_dict):
+    bad = json.loads(json.dumps(rho_realtime_dict))
+    del bad['spatial']['fit']['TJ70_lm_extreme']
+    with pytest.raises(ValueError, match='TJ70_lm_extreme'):
+        DragTrackDensity.from_files(bad)
+
+
+def test_absent_scenario_not_available(rho_realtime_dict):
+    d = json.loads(json.dumps(rho_realtime_dict))
+    del d['fit']['rho_extreme']
+    m = DragTrackDensity.from_files(d)
+    with pytest.raises(ValueError, match='not available'):
+        m.rho('2026-09-14T06:00:00Z', 0.0, 0.0, 400.0, source='extreme')
+
+
+def test_spatial_times_must_match(rho_realtime_dict):
+    bad = json.loads(json.dumps(rho_realtime_dict))
+    t = bad['spatial']['solver']['time_utc']
+    bad['spatial']['solver']['time_utc'] = t[1:] + t[:1]
+    with pytest.raises(ValueError, match='time_utc'):
+        DragTrackDensity.from_files(bad)
+
+
+def test_rho_full_altitude_grid_must_match(rho_realtime_dict):
+    full = json.loads(json.dumps(rho_realtime_dict))
+    full['altitude_km'] = [a + 1.0 for a in full['altitude_km']]
+    with pytest.raises(ValueError, match='altitude_km'):
+        DragTrackDensity.from_files(rho_realtime_dict, full)

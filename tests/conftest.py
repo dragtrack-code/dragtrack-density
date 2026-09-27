@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from dragtrack import SCENARIOS
+
 
 def _blank_lm(n: int) -> list[list[float]]:
     """SH-16 all-zero coefficients (pure global T_c, no spatial variation)."""
@@ -55,6 +57,8 @@ def rho_realtime_dict() -> dict:
             'S': [0.0] * nf,
             'G': [10.0] * nf,
             'params': {'a': 1e-9, 'b': 1e-14, 'c': -1e-12, 't0': 0.5, 'rmspe': 0.10},
+            **{f'rho_{k}': fit_rho for k in SCENARIOS},
+            **{f'TJ70_K_{k}': [850.0] * nf for k in SCENARIOS},
         },
         'spatial': {
             'solver': {
@@ -64,6 +68,7 @@ def rho_realtime_dict() -> dict:
             'fit': {
                 'time_utc': fit_times,
                 'TJ70_lm':  _blank_lm(nf),
+                **{f'TJ70_lm_{k}': _blank_lm(nf) for k in SCENARIOS},
             },
             'provenance': {
                 'recipe':       'j70_clim_R0.25_A_res_Y11',
