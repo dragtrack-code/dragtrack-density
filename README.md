@@ -1,6 +1,6 @@
 # dragtrack
 
-Total thermospheric mass density at a point rho(t, lat, lon, alt)`
+Total thermospheric mass density at a point, `rho(t, lat, lon, alt)`.
 
 ```python
 from dragtrack import DragTrackDensity
@@ -22,7 +22,7 @@ based on them.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.3-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.4-py3-none-any.whl
 ```
 
 Runtime dependency: `numpy>=1.20`.  Not on PyPI — the wheel above is
@@ -56,14 +56,16 @@ default `source='baseline'`; scenarios run further (`end_by_source[name]`).
 
 Pin to a historic snapshot by swapping `latest/` for a dated directory
 (`2026-09-23/` etc.) — see `manifest.json` on the dataset for the list.
-Or download the files and use `from_files(...)`.
+Or download the files and use `from_files(...)` (it takes local paths,
+URLs, or `.json.gz` files).
 
 ---
 
 ## Coordinate conventions
 
 * **Time** — UTC.  ISO-8601 strings (`'2026-09-13T12:00:00Z'`),
-  `datetime`, `np.datetime64`, or numeric days-since-1970 UTC.
+  `datetime`, `np.datetime64`, or numeric days-since-1970 UTC.  Times
+  without a timezone are taken as UTC; times with an offset are converted.
 * **Latitude** — WGS84 geodetic, degrees, `[-90, 90]`.
 * **Longitude** — degrees, either `[-180, 180]` or `[0, 360]`.
 * **Altitude** — geodetic height above the WGS-84 ellipsoid, km.
@@ -156,9 +158,9 @@ Add `--json` to `rho` for a full record instead of a bare number.
 
 ---
 
-## Obtaining sub-orbit densities 
+## How point densities are computed
 
-The JSON providep:
+The JSON provides:
 
 * a **global average** — the horizontally-averaged density at 400 km
   (`solver.rho[:, i400]`) and the corresponding global mean thermospheric

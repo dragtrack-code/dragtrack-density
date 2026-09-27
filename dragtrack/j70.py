@@ -12,7 +12,7 @@ copy of the producer's LUT); :class:`J70` converts to kg/m^3 on load.
 
 Usage
 -----
->>> from dragtrack import J70
+>>> from dragtrack.j70 import J70
 >>> j = J70()
 >>> j(alt_km=450, TJ70_K=850)   # kg / m^3  (TJ70 == Jacchia's Tinf)
 """

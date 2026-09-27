@@ -32,17 +32,18 @@ _EPOCH_UTC = datetime(1970, 1, 1, tzinfo=timezone.utc)
 # ─── Time helpers ─────────────────────────────────────────────────────────
 
 def _parse_time(t: TimeLike) -> datetime:
-    """Parse ``t`` into a timezone-aware UTC ``datetime``."""
-    if isinstance(t, datetime):
-        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    """Parse ``t`` into a timezone-aware UTC ``datetime``.  Naive datetimes
+    and ISO strings without an offset are taken as UTC."""
     if isinstance(t, str):
-        return datetime.fromisoformat(t.replace('Z', '+00:00'))
+        t = datetime.fromisoformat(t.replace('Z', '+00:00'))
+    if isinstance(t, datetime):
+        return (t.replace(tzinfo=timezone.utc) if t.tzinfo is None
+                else t.astimezone(timezone.utc))
     if isinstance(t, np.datetime64):
         secs = (t - np.datetime64('1970-01-01T00:00:00')) / np.timedelta64(1, 's')
         return datetime.fromtimestamp(float(secs), tz=timezone.utc)
     if isinstance(t, (float, int, np.floating, np.integer)):
-        return _EPOCH_UTC + (datetime.fromtimestamp(float(t) * 86400.0,
-                                                    tz=timezone.utc) - _EPOCH_UTC)
+        return _EPOCH_UTC + timedelta(days=float(t))
     raise TypeError(f'Cannot parse time {t!r}')
 
 
@@ -395,36 +396,23 @@ class DragTrackDensity:
         r = np.asarray(r_km, float)
         if r.shape[-1] != 3:
             raise ValueError(f'r_km last axis must be size 3 (got {r.shape})')
-        flat_r = r.reshape(-1, 3)
-        t_arr = _as_time_seq(t)
-        t_days, ut_h = _vec_time_features(list(t_arr))
-        if flat_r.shape[0] != len(t_days):
-            if len(t_days) == 1:
-                t_days = np.full(flat_r.shape[0], t_days[0])
-                ut_h = np.full(flat_r.shape[0], ut_h[0])
-            else:
-                raise ValueError(
-                    f't and r_km lengths mismatch (t={len(t_days)} vs '
-                    f'r_km={flat_r.shape[0]})')
-        # Rotate to ECEF if inertial.
-        if frame == 'EarthMJ2000Eq':
-            r_ecef = _eci_to_ecef(flat_r, t_days)
-        elif frame == 'EarthFixed':
-            r_ecef = flat_r
-        else:
+        if frame not in ('EarthMJ2000Eq', 'EarthFixed'):
             raise ValueError(
                 f"frame must be 'EarthMJ2000Eq' or 'EarthFixed' (got {frame!r})")
-        # ECEF → WGS84 geodetic.
+        flat_r = r.reshape(-1, 3)
+        n = flat_r.shape[0]
+        t_arr = _as_time_seq(t)
+        if len(t_arr) == 1:
+            t_arr = t_arr * n
+        elif len(t_arr) != n:
+            raise ValueError(f't and r_km lengths mismatch '
+                             f'(t={len(t_arr)} vs r_km={n})')
+        r_ecef = (_eci_to_ecef(flat_r, _vec_time_features(t_arr)[0])
+                  if frame == 'EarthMJ2000Eq' else flat_r)
         lat_deg, lon_deg, alt_km = _ecef_to_geodetic(r_ecef)
-        # Call the scalar rho path via the array shape we've been building.
-        # We already have t_days available; delegate to .rho().
-        out = self.rho(
-            [t_arr[0]] * flat_r.shape[0]
-            if len(t_arr) == 1 else list(t_arr),
-            lat_deg, lon_deg, alt_km, source=source,
-        )
-        if flat_r.shape[0] == 1 and np.ndim(r_km) == 1:
-            return float(out[0]) if hasattr(out, '__len__') else float(out)
+        out = self.rho(t_arr, lat_deg, lon_deg, alt_km, source=source)
+        if r.ndim == 1:
+            return float(out[0])
         return np.asarray(out).reshape(r.shape[:-1])
 
     # ── Loaders ───────────────────────────────────────────────────────────
@@ -436,7 +424,8 @@ class DragTrackDensity:
         rho_full: PathLike | Mapping[str, Any] | None = None,
         j70_lut: PathLike | None = None,
     ) -> "DragTrackDensity":
-        """Build from filesystem path(s) or already-parsed dict(s)."""
+        """Build from local path(s), HTTP(S) URL(s) or already-parsed
+        dict(s); paths and URLs may be mixed."""
         rt = _load_json(rho_realtime) if not isinstance(rho_realtime, Mapping) \
              else dict(rho_realtime)
         fl = None
@@ -453,15 +442,8 @@ class DragTrackDensity:
         rho_full_url: str | None = None,
         j70_lut: PathLike | None = None,
     ) -> "DragTrackDensity":
-        """Fetch JSON products over HTTP(S)."""
-        with urlopen(rho_realtime_url) as r:
-            rt = json.load(r)
-        fl = None
-        if rho_full_url:
-            with urlopen(rho_full_url) as r:
-                fl = json.load(r)
-        j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, rho_full=fl, j70=j)
+        """Fetch JSON products over HTTP(S) (same as :meth:`from_files`)."""
+        return cls.from_files(rho_realtime_url, rho_full_url or None, j70_lut)
 
     # ── Metadata ──────────────────────────────────────────────────────────
 
@@ -590,7 +572,6 @@ def _ecef_to_geodetic(r_ecef_km: NDArray[np.float64]):
     z = np.asarray(r_ecef_km[..., 2], float)
     a = _WGS84_A_KM
     e2 = _WGS84_E2
-    b = a * np.sqrt(1.0 - e2)
     p = np.sqrt(x ** 2 + y ** 2)
     # Iterative Bowring for latitude.
     lat = np.arctan2(z, p * (1.0 - e2))
@@ -609,9 +590,21 @@ def _ecef_to_geodetic(r_ecef_km: NDArray[np.float64]):
     return np.rad2deg(lat), np.rad2deg(lon), alt
 
 
-def _load_json(fp: PathLike) -> dict:
-    p = Path(fp)
-    if p.suffix.endswith('.gz'):
+_URL_TIMEOUT_S = 120
+
+
+def _load_json(src: PathLike) -> dict:
+    """Parse a product JSON from a local path or an HTTP(S) URL
+    (``.gz`` compressed or plain)."""
+    s = str(src)
+    if s.startswith(('http://', 'https://')):
+        with urlopen(s, timeout=_URL_TIMEOUT_S) as r:
+            raw = r.read()
+        if s.endswith('.gz'):
+            raw = gzip.decompress(raw)
+        return json.loads(raw)
+    p = Path(src)
+    if p.suffix == '.gz':
         with gzip.open(p, 'rt', encoding='utf-8') as f:
             return json.load(f)
     with p.open('r', encoding='utf-8') as f:

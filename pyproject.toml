@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragtrack"
-version = "0.6.3"
+version = "0.6.4"
 description = "Atmospheric density rho(t, lat, lon, alt) from DragTrack JSON data products."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,6 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Astronomy",
     "Topic :: Scientific/Engineering :: Atmospheric Science",
 ]
@@ -39,7 +40,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ephem = ["sgp4>=2.20"]
 test  = ["pytest>=7", "sgp4>=2.20"]
 dev   = ["pytest>=7", "sgp4>=2.20", "pytest-cov"]
 
