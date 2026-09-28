@@ -7,7 +7,8 @@ products, and a small Python package (`dragtrack`) to use them.
 from dragtrack import DragTrackDensity, load_sats
 
 BASE = 'https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest'
-m = DragTrackDensity.from_url(f'{BASE}/rho_realtime.json', f'{BASE}/rho_full.json')
+m = DragTrackDensity.from_url(f'{BASE}/rho_realtime.json', f'{BASE}/rho_full.json',
+                              rho_forecast_url=f'{BASE}/rho_forecast.json')
 rho = m.rho('2026-09-13T12:00:00Z', lat_deg=45, lon_deg=0, alt_km=450)   # kg/m^3
 
 sats = load_sats(f'{BASE}/leo_sats.json')
@@ -22,14 +23,14 @@ SWPC/NCEI, NASA SPDF (OMNI2) and GFZ Potsdam.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.9-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.10-py3-none-any.whl
 ```
 
 Python >= 3.9, numpy >= 1.21.  Not on PyPI.
 
 ## The data products
 
-Three JSON files in `latest/` on the
+Four JSON files in `latest/` on the
 [Hugging Face dataset](https://huggingface.co/datasets/djgersh/dragtrack-density-data),
 regenerated together after each solver update and sharing one
 `meta.run_id`.  Earlier versions are kept in dated directories, listed in
@@ -39,6 +40,7 @@ regenerated together after each solver update and sharing one
 |---|---|
 | `rho_realtime.json` | Global density: recent solver values, a fit to them, and forecast scenarios |
 | `rho_full.json` | Global density: every solver value since 2014 |
+| `rho_forecast.json` | Global density: the `rho_realtime` fit continued to about 45 days ahead with the NOAA SWPC forecasts |
 | `leo_sats.json` | Daily drag data for every LEO object with measurable drag, flagging the satellites the density solver uses |
 
 Each file defines its fields, units and conventions in its `meta` block.
@@ -66,6 +68,17 @@ Times are UTC.
 forecast; `rho_full` covers 2014 to the last solver value.  Use both for a
 continuous record.
 
+### rho_forecast: SWPC-driven forecast
+
+The `rho_realtime` fit continued past its last `rho_fit` value to the
+horizon of the NOAA SWPC solar and geomagnetic forecasts (about 45 days),
+with `S` and `G` derived from those forecasts.  It has only a `fit` block
+and `spatial.fit`, with the same fields as `rho_realtime` (`rho_fit`,
+the scenarios, `TJ70_K`, `J70_scale`, `uncertainty_*`, `S`, `G`), every
+row a forecast.  The uncertainty grows with lead time.  How the SWPC
+values are converted is in its `meta.conventions`; the SWPC issue times
+are in `meta.provenance`.
+
 ### leo_sats: satellite drag data
 
 One record per object, with daily values on the file's `time_utc_daily`
@@ -85,11 +98,12 @@ satellite the solver used; the selection is in `meta.selection`.
 
 ## Density at a point
 
-`DragTrackDensity` reads `rho_realtime` (and optionally `rho_full`) and
-returns the density at any time and place:
+`DragTrackDensity` reads `rho_realtime` (and optionally `rho_full` and
+`rho_forecast`) and returns the density at any time and place:
 
 ```python
-m = DragTrackDensity.from_files('rho_realtime.json', 'rho_full.json')
+m = DragTrackDensity.from_files('rho_realtime.json', 'rho_full.json',
+                                rho_forecast='rho_forecast.json')
 m.rho(t, lat_deg, lon_deg, alt_km, source='baseline')
 ```
 
@@ -107,7 +121,10 @@ Arrays broadcast; all-scalar input returns a float.  `from_files` and
 returns NaN; nothing is extrapolated.
 
 `source` selects the forecast after the last solver value; before it every
-source returns the same solver values.  `'baseline'` (the default) uses the
+source returns the same solver values.  With `rho_forecast` loaded, its
+rows replace the `rho_realtime` fit from the forecast's first time on, and
+every source runs to the SWPC horizon; use the two files from the same
+run (`meta.run_id`; a mismatch warns).  `'baseline'` (the default) uses the
 measured drivers; the scenarios `'solar_only'`, `'quiet'`, `'median'`,
 `'moderate'`, `'intense'` and `'extreme'` hold G at the levels defined in
 the file's `meta.scenarios`.
@@ -168,6 +185,6 @@ for norad, s in stable.items():
 
 ```
 python -m dragtrack rho <time> <lat> <lon> <alt> --rho-realtime PATH_OR_URL \
-    [--rho-full PATH_OR_URL] [--source NAME] [--json]
-python -m dragtrack info --rho-realtime PATH_OR_URL
+    [--rho-full PATH_OR_URL] [--rho-forecast PATH_OR_URL] [--source NAME] [--json]
+python -m dragtrack info --rho-realtime PATH_OR_URL [--rho-forecast PATH_OR_URL]
 ```
