@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rho.add_argument('--rho-full', default=None,
                        help=('Path to (or URL of) dragtrack_rho_full_*.json. '
                              'Optional; adds solver history from 2014 for times '
-                             'before the realtime file\'s ~27-day window.'))
+                             'before the realtime file\'s window.'))
     p_rho.add_argument('--source', default='baseline',
                        choices=('baseline',) + SCENARIOS,
                        help=('Which estimate to return.  "baseline" is the '

@@ -114,7 +114,7 @@ class DragTrackDensity:
     rho_full : dict, optional
         Parsed historical-archive JSON (``dragtrack_rho_full_*``).  Adds
         solver history from 2014 onward for times before the realtime
-        file's ~27-day window.
+        file's window.
     j70 : J70, optional
         Preloaded Jacchia-70 lookup table.  Loaded from the packaged
         asset if omitted.
