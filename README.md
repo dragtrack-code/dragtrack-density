@@ -29,71 +29,59 @@ Python >= 3.9, numpy >= 1.21.  Not on PyPI.
 
 ## The data products
 
-Four JSON files, all in `latest/` on the
-[Hugging Face dataset](https://huggingface.co/datasets/djgersh/dragtrack-density-data).
-They are regenerated together after each solver update (about twice a
-day) and carry the same `meta.run_id`.  Past `rho_realtime`, `stable_sats`
-and `leo_sats` files are kept in dated directories (`YYYY-MM-DD/`,
-versioned file names), listed in `manifest.json`.
+Four JSON files in `latest/` on the
+[Hugging Face dataset](https://huggingface.co/datasets/djgersh/dragtrack-density-data),
+regenerated together after each solver update and sharing one
+`meta.run_id`.  Earlier versions are kept in dated directories, listed in
+`manifest.json`.
 
-| File | What it is | Covers | Size |
-|---|---|---|---|
-| `rho_realtime.json` | Global density: recent solver values, fit and forecast scenarios | last ~27 days + ~1-5 day forecast | ~6 MB |
-| `rho_full.json` | Global density: full solver history | 2014 to the latest solver value | ~19 MB |
-| `stable_sats.json` | Daily drag data for the satellites the solver uses | last ~27 days | ~1.5 MB |
-| `leo_sats.json` | Daily drag data for every LEO object with measurable drag | last ~27 days | ~30 MB |
+| File | Contents |
+|---|---|
+| `rho_realtime.json` | Global density: recent solver values, a fit to them, and forecast scenarios |
+| `rho_full.json` | Global density: every solver value since 2014 |
+| `stable_sats.json` | Daily drag data for the satellites the density solver uses |
+| `leo_sats.json` | Daily drag data for every LEO object with measurable drag |
 
-Every file describes its own fields, units and conventions in its `meta`
-block; read that for exact definitions.  Times are UTC.
+Each file defines its fields, units and conventions in its `meta` block.
+Times are UTC.
 
 ### rho_realtime and rho_full: density
 
-Both files hold the density of the whole thermosphere as a function of
-time:
-
-* `altitude_km`: 250-600 km in 50 km steps, geodetic height above the
-  WGS-84 ellipsoid.
-* `solver`: the TLE-based solution, one row per time.  `rho` (kg/m^3,
+* `altitude_km`: the altitude grid, geodetic height above the WGS-84
+  ellipsoid.
+* `solver`: the TLE-based solution, one row per time: `rho` (kg/m^3,
   globe-average density at each altitude), `uncertainty` (relative
   1-sigma), `TJ70_K` and `J70_scale` (the Jacchia-1970 temperature and
-  scale that give `rho` at any other height), `source` and `bin_days`
-  (the averaging behind each row).  Daily values are stamped at noon;
-  from 2022 on, most days also have 3-hour values.
-* `spatial`: 16 spherical-harmonic coefficients per row (`TJ70_lm`) that
-  describe how the temperature, and so the density, varies with latitude
-  and local solar time.
-* `fit` (`rho_realtime` only): hourly rows from a regression
-  `rho_400 = a·S + b·G(t − t0) + c` on the solver values of the past 27
-  days, driven by solar EUV (`S`, GOES) and geomagnetic activity (`G`,
-  from the solar wind).  `rho_fit` extends past the latest solver value
-  with measured drivers (~1-2 days); `rho_<scenario>` holds G fixed at
-  set levels (~4-5 days).
+  scale that give `rho` at any height), `source` and `bin_days` (the
+  averaging behind each row).
+* `spatial`: 16 spherical-harmonic coefficients per row (`TJ70_lm`)
+  describing how the temperature, and so the density, varies with
+  latitude and local solar time.
+* `fit` (`rho_realtime` only): hourly rows of a regression
+  `rho_400 = a·S + b·G(t − t0) + c` on the recent solver values, driven by
+  solar EUV (`S`) and geomagnetic activity (`G`).  `rho_fit` uses the
+  measured drivers and extends past the last solver value;
+  `rho_<scenario>` holds G at fixed levels.
 
-`rho_realtime` has the last ~27 days of `solver` rows plus the `fit`;
-`rho_full` has every `solver` row since 2014.  Use both for a continuous
-record from 2014 to the forecast.
+`rho_realtime` covers the recent window (`meta.window_days`) plus the
+forecast; `rho_full` covers 2014 to the last solver value.  Use both for a
+continuous record.
 
 ### stable_sats and leo_sats: satellite drag data
 
 One record per object, with daily values on the file's `time_utc_daily`
-axis (the last ~27 complete UTC days):
+axis:
 
 * orbit: `sma_km`, `eccentricity`, `perigee_km`, `apogee_km`,
-  `alt_mean_km` (heights above a 6371.010 km sphere; they describe the
-  orbit only), `inc_deg`, `raan_deg`, `v` (km/s), `n_tle`;
-* drag: `vdot` (TLE-derived in-track drag deceleration, m/s^2) and
-  `sigma_vdot`;
-* `rho`: the density product averaged along the object's orbit (kg/m^3);
-* `bc_inv_m2_per_kg`: inverse ballistic coefficient `Cd·A/m` (m^2/kg)
-  from `vdot = ½·(Cd·A/m)·rho·v²`, and `sigma_bc_inv_m2_per_kg`.  Null on
-  days with a reboost (vdot <= 0) or a manoeuvre (more than 3x from the
-  object's own 27-day median).
+  `alt_mean_km`, `inc_deg`, `raan_deg`, `v`, `n_tle`;
+* drag: `vdot` (TLE-derived in-track drag deceleration) and `sigma_vdot`;
+* `rho`: the density product averaged along the object's orbit;
+* `bc_inv_m2_per_kg`: inverse ballistic coefficient `Cd·A/m` from
+  `vdot = ½·(Cd·A/m)·rho·v²`, and `sigma_bc_inv_m2_per_kg`.
 
-`stable_sats` lists the satellites the density solver used on its latest
-complete day (~170), with the `rmspe` of each satellite's drag fit.
-`leo_sats` covers every LEO object whose drag is measurable (~3500):
-perigee 150-600 km, apogee <= 1000 km, at least 10 days with vdot and a
-clear signal (`meta.selection`).
+`stable_sats` holds the satellites the density solver used, with the
+`rmspe` of each one's drag fit.  `leo_sats` holds every LEO object whose
+drag is measurable; its selection is in `meta.selection`.
 
 ## Density at a point
 
@@ -108,32 +96,21 @@ m.rho(t, lat_deg, lon_deg, alt_km, source='baseline')
 * `t`: UTC, as an ISO-8601 string, `datetime`, `np.datetime64` or days
   since 1970-01-01.  Times without a timezone are UTC.
 * `lat_deg`: geodetic latitude (WGS-84), degrees.
-* `lon_deg`: degrees east, `[-180, 180]` or `[0, 360]`.
-* `alt_km`: geodetic height above the WGS-84 ellipsoid, km, 100-1000 km
-  (the Jacchia table; NaN outside).
+* `lon_deg`: degrees east.
+* `alt_km`: geodetic height above the WGS-84 ellipsoid, km, within the
+  Jacchia table (100-1000 km; NaN outside).
 
 Arrays broadcast; all-scalar input returns a float.  `from_files` and
 `from_url` take local paths, URLs or `.json.gz` files.
 
-`m.coverage` gives the valid span: `solver_start`, `solver_edge` (the
-product's `tle_edge_utc`), `end` (last valid time for the default source)
-and `end_by_source`.  Outside it `rho()` returns NaN; nothing is
-extrapolated.
+`m.coverage` gives the valid time span, per source.  Outside it `rho()`
+returns NaN; nothing is extrapolated.
 
-`source` picks the forecast after `solver_edge`; before it every source
-returns the same solver values:
-
-| `source` | Fit uses |
-|---|---|
-| `'baseline'` (default) | measured S and G |
-| `'solar_only'` | G = 0 (lower envelope) |
-| `'quiet'` | G at about the 2014-2026 median |
-| `'median'` | median G of the past 27 days |
-| `'moderate'` | G at about the 2014-2026 97th percentile |
-| `'intense'` | G at about the 2014-2026 99.4th percentile |
-| `'extreme'` | G at about the 2014-2026 99.9th percentile (upper envelope) |
-
-A scenario missing from a file raises an error.
+`source` selects the forecast after the last solver value; before it every
+source returns the same solver values.  `'baseline'` (the default) uses the
+measured drivers; the scenarios `'solar_only'`, `'quiet'`, `'median'`,
+`'moderate'`, `'intense'` and `'extreme'` hold G at the levels defined in
+the file's `meta.scenarios`.
 
 How a point density is computed:
 
@@ -147,24 +124,21 @@ rho  = K(t) · J70(alt, T)
 `K(t)` makes the globe-average density at 400 km equal the product's
 value.  `J70` is the Jacchia (1970) profile from the bundled lookup table.
 
-### Position vectors (GMAT and other propagators)
+### Position vectors
 
 ```python
 rho = m.rho_from_state(t, r_km, frame='EarthMJ2000Eq')   # or 'EarthFixed'
 ```
 
-`r_km` is `(3,)` or `(N, 3)` in km, one time per row.  `EarthFixed` is
-used as-is.  `EarthMJ2000Eq` is rotated to Earth-fixed by GMST only (no
-precession or nutation: ~0.37° in 2026, about 1.5 min of local solar
-time); for better accuracy pass `EarthFixed` coordinates.  GMAT's
-`Latitude`, `Longitude` and `Altitude` from an `EarthFixed` coordinate
-system can go straight into `rho()`.
+`r_km` is `(3,)` or `(N, 3)` in km, one time per row.  `EarthMJ2000Eq` is
+rotated to Earth-fixed by GMST only (no precession or nutation); pass
+`EarthFixed` coordinates for full accuracy.
 
 ## Satellite drag data
 
-`load_sats` reads either file into `{norad_id: record}`, with the product's
-field names; daily values are float arrays (null -> NaN) and `date` gives
-the UTC day of each.
+`load_sats` reads either file into `{norad_id: record}` with the product's
+field names; daily values are float arrays (null -> NaN) and `date` is the
+UTC day of each.
 
 Any LEO object, from `leo_sats`:
 
@@ -173,7 +147,7 @@ from dragtrack import load_sats
 
 leo = load_sats(f'{BASE}/leo_sats.json')
 iss = leo[25544]                   # by NORAD ID
-iss['date']                        # UTC day of each value (datetime64[D])
+iss['date']                        # UTC day of each value
 iss['bc_inv_m2_per_kg']            # daily Cd·A/m (m^2/kg), NaN where not available
 iss['rho']                         # density along its orbit, each day (kg/m^3)
 ```
