@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragtrack"
-version = "0.6.7"
+version = "0.6.8"
 description = "Atmospheric density rho(t, lat, lon, alt) from DragTrack JSON data products."
 readme = "README.md"
 requires-python = ">=3.9"
