@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence, Tuple, Union
@@ -118,6 +119,12 @@ class DragTrackDensity:
     j70 : J70, optional
         Preloaded Jacchia-70 lookup table.  Loaded from the packaged
         asset if omitted.
+    rho_forecast : dict, optional
+        Parsed SWPC-driven forecast JSON (``dragtrack_rho_forecast_*``),
+        ideally from the same run (``meta.run_id``) as ``rho_realtime``.
+        Its rows replace the realtime fit rows from its first time on,
+        extending ``'baseline'`` and every scenario to the SWPC horizon
+        (about 45 days).
     """
 
     def __init__(
@@ -125,6 +132,7 @@ class DragTrackDensity:
         rho_realtime: Mapping[str, Any],
         rho_full: Mapping[str, Any] | None = None,
         j70: J70 | None = None,
+        rho_forecast: Mapping[str, Any] | None = None,
     ) -> None:
         if 'solver' not in rho_realtime:
             raise KeyError(
@@ -191,6 +199,12 @@ class DragTrackDensity:
                                "schema 0.10.0; get a current file")
             fits[k] = (_as_2d(ft[f'rho_{k}'])[:, i400], _as_1d(ft[f'TJ70_K_{k}']),
                        _spatial_lm(rho_realtime, 'fit', ft['time_utc'], f'TJ70_lm_{k}'))
+
+        # ── Optional SWPC-driven forecast (rho_forecast): its rows replace
+        # the realtime fit rows from its first time on.
+        if rho_forecast is not None:
+            ft_t, fits = _splice_forecast(rho_realtime, rho_forecast, alts, i400,
+                                          ft_t, fits)
 
         # ── Merge per source: solver → fit ──────────────────────────────
         LAT_g, LST_g, self._w = _sphere_grid()
@@ -389,17 +403,17 @@ class DragTrackDensity:
         rho_realtime: PathLike | Mapping[str, Any],
         rho_full: PathLike | Mapping[str, Any] | None = None,
         j70_lut: PathLike | None = None,
+        rho_forecast: PathLike | Mapping[str, Any] | None = None,
     ) -> "DragTrackDensity":
         """Build from local path(s), HTTP(S) URL(s) or already-parsed
         dict(s); paths and URLs may be mixed."""
-        rt = _load_json(rho_realtime) if not isinstance(rho_realtime, Mapping) \
-             else dict(rho_realtime)
-        fl = None
-        if rho_full is not None:
-            fl = _load_json(rho_full) if not isinstance(rho_full, Mapping) \
-                 else dict(rho_full)
+        def load(src):
+            if src is None:
+                return None
+            return dict(src) if isinstance(src, Mapping) else _load_json(src)
         j = J70(j70_lut) if j70_lut is not None else None
-        return cls(rho_realtime=rt, rho_full=fl, j70=j)
+        return cls(rho_realtime=load(rho_realtime), rho_full=load(rho_full), j70=j,
+                   rho_forecast=load(rho_forecast))
 
     @classmethod
     def from_url(
@@ -407,9 +421,11 @@ class DragTrackDensity:
         rho_realtime_url: str,
         rho_full_url: str | None = None,
         j70_lut: PathLike | None = None,
+        rho_forecast_url: str | None = None,
     ) -> "DragTrackDensity":
         """Fetch JSON products over HTTP(S) (same as :meth:`from_files`)."""
-        return cls.from_files(rho_realtime_url, rho_full_url or None, j70_lut)
+        return cls.from_files(rho_realtime_url, rho_full_url or None, j70_lut,
+                              rho_forecast_url or None)
 
     # ── Metadata ──────────────────────────────────────────────────────────
 
@@ -449,6 +465,35 @@ class DragTrackDensity:
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
+
+def _splice_forecast(rho_realtime: Mapping[str, Any], rho_forecast: Mapping[str, Any],
+                     alts: NDArray, i400: int, ft_t: NDArray, fits: dict):
+    """Realtime fit rows before the forecast's first time, then the forecast
+    rows, per source.  Every source in ``fits`` must be in the forecast."""
+    fc = rho_forecast.get('fit') or {}
+    if not fc.get('time_utc'):
+        raise KeyError("not a DragTrack rho_forecast JSON (no fit.time_utc)")
+    if not np.array_equal(np.asarray(rho_forecast.get('altitude_km', []), float), alts):
+        raise ValueError("rho_forecast and rho_realtime altitude_km grids differ")
+    rid_rt = (rho_realtime.get('meta') or {}).get('run_id')
+    rid_fc = (rho_forecast.get('meta') or {}).get('run_id')
+    if rid_rt and rid_fc and rid_rt != rid_fc:
+        warnings.warn(f"rho_forecast run_id {rid_fc} differs from rho_realtime "
+                      f"run_id {rid_rt}; use files from the same run", stacklevel=3)
+    fc_t = _vec_to_days(fc['time_utc'])
+    keep = ft_t < fc_t[0]
+    out = {}
+    for src, (rho400, tj70, lm) in fits.items():
+        k = '' if src == 'baseline' else f'_{src}'
+        rkey = 'rho_fit' if src == 'baseline' else f'rho_{src}'
+        if rkey not in fc or f'TJ70_K{k}' not in fc:
+            raise KeyError(f"rho_forecast has no fit.{rkey} / fit.TJ70_K{k}")
+        out[src] = (np.concatenate([rho400[keep], _as_2d(fc[rkey])[:, i400]]),
+                    np.concatenate([tj70[keep], _as_1d(fc[f'TJ70_K{k}'])]),
+                    np.vstack([lm[keep], _spatial_lm(rho_forecast, 'fit', fc['time_utc'],
+                                                     f'TJ70_lm{k}')]))
+    return np.concatenate([ft_t[keep], fc_t]), out
+
 
 def _source_end(s: dict) -> float:
     """Last time (POSIX days) at which :meth:`DragTrackDensity.rho` is
