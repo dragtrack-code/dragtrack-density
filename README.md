@@ -22,14 +22,14 @@ SWPC/NCEI, NASA SPDF (OMNI2) and GFZ Potsdam.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.8-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.9-py3-none-any.whl
 ```
 
 Python >= 3.9, numpy >= 1.21.  Not on PyPI.
 
 ## The data products
 
-Four JSON files in `latest/` on the
+Three JSON files in `latest/` on the
 [Hugging Face dataset](https://huggingface.co/datasets/djgersh/dragtrack-density-data),
 regenerated together after each solver update and sharing one
 `meta.run_id`.  Earlier versions are kept in dated directories, listed in
@@ -39,8 +39,7 @@ regenerated together after each solver update and sharing one
 |---|---|
 | `rho_realtime.json` | Global density: recent solver values, a fit to them, and forecast scenarios |
 | `rho_full.json` | Global density: every solver value since 2014 |
-| `stable_sats.json` | Daily drag data for the satellites the density solver uses |
-| `leo_sats.json` | Daily drag data for every LEO object with measurable drag |
+| `leo_sats.json` | Daily drag data for every LEO object with measurable drag, flagging the satellites the density solver uses |
 
 Each file defines its fields, units and conventions in its `meta` block.
 Times are UTC.
@@ -67,7 +66,7 @@ Times are UTC.
 forecast; `rho_full` covers 2014 to the last solver value.  Use both for a
 continuous record.
 
-### stable_sats and leo_sats: satellite drag data
+### leo_sats: satellite drag data
 
 One record per object, with daily values on the file's `time_utc_daily`
 axis:
@@ -77,11 +76,12 @@ axis:
 * drag: `vdot` (TLE-derived in-track drag deceleration) and `sigma_vdot`;
 * `rho`: the density product averaged along the object's orbit;
 * `bc_inv_m2_per_kg`: inverse ballistic coefficient `Cd·A/m` from
-  `vdot = ½·(Cd·A/m)·rho·v²`, and `sigma_bc_inv_m2_per_kg`.
+  `vdot = ½·(Cd·A/m)·rho·v²`, and `sigma_bc_inv_m2_per_kg`;
+* `stable`: true for the satellites the density solver used;
+* `rmspe`: quality of the object's drag fit (null without one).
 
-`stable_sats` holds the satellites the density solver used, with the
-`rmspe` of each one's drag fit.  `leo_sats` holds every LEO object whose
-drag is measurable; its selection is in `meta.selection`.
+The file holds every LEO object whose drag is measurable plus every
+satellite the solver used; the selection is in `meta.selection`.
 
 ## Density at a point
 
@@ -136,7 +136,7 @@ rotated to Earth-fixed by GMST only (no precession or nutation); pass
 
 ## Satellite drag data
 
-`load_sats` reads either file into `{norad_id: record}` with the product's
+`load_sats` reads the leo_sats file into `{norad_id: record}` with the product's
 field names; daily values are float arrays (null -> NaN) and `date` is the
 UTC day of each.
 
@@ -152,12 +152,12 @@ iss['bc_inv_m2_per_kg']            # daily Cd·A/m (m^2/kg), NaN where not avail
 iss['rho']                         # density along its orbit, each day (kg/m^3)
 ```
 
-The satellites behind the density solution, from `stable_sats`:
+The satellites behind the density solution (`stable`):
 
 ```python
 import numpy as np
 
-stable = load_sats(f'{BASE}/stable_sats.json')
+stable = {n: s for n, s in leo.items() if s['stable']}
 for norad, s in stable.items():
     print(norad, s['name'], f"{np.nanmedian(s['alt_mean_km']):.0f} km",
           f"BC {np.nanmedian(s['bc_inv_m2_per_kg']):.4f} m^2/kg",
