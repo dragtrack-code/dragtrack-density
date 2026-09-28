@@ -538,3 +538,66 @@ def test_rho_full_altitude_grid_must_match(rho_realtime_dict):
     full['altitude_km'] = [a + 1.0 for a in full['altitude_km']]
     with pytest.raises(ValueError, match='altitude_km'):
         DragTrackDensity.from_files(rho_realtime_dict, full)
+
+
+# ── rho_forecast splice ───────────────────────────────────────────────────
+
+def _forecast_for(rt: dict, run_id: str | None = None) -> dict:
+    """Synthetic rho_forecast: hourly from 2026-09-14T06 (overlapping the
+    realtime fit's last two rows) to 2026-09-16T00, at twice the realtime
+    density."""
+    times = [f'2026-09-{d:02d}T{h:02d}:00:00Z' for d in (14, 15) for h in range(24)
+             if (d, h) >= (14, 6)] + ['2026-09-16T00:00:00Z']
+    n = len(times)
+    row = [2.0 * v for v in rt['fit']['rho_fit'][0]]
+    lm = [[0.0] * 16 for _ in range(n)]
+    return {
+        'meta': {'run_id': run_id or rt['meta'].get('run_id')},
+        'altitude_km': list(rt['altitude_km']),
+        'fit': {'time_utc': times, 'row_type': ['forecast'] * n,
+                'rho_fit': [row] * n, 'TJ70_K': [850.0] * n,
+                **{f'rho_{k}': [row] * n for k in SCENARIOS},
+                **{f'TJ70_K_{k}': [850.0] * n for k in SCENARIOS}},
+        'spatial': {'fit': {'time_utc': times, 'TJ70_lm': lm,
+                            **{f'TJ70_lm_{k}': lm for k in SCENARIOS}}},
+    }
+
+
+def test_forecast_extends_coverage_and_replaces_overlap(rho_realtime_dict):
+    fc = _forecast_for(rho_realtime_dict)
+    m0 = DragTrackDensity.from_files(rho_realtime_dict)
+    m = DragTrackDensity.from_files(rho_realtime_dict, rho_forecast=fc)
+    cov = m.coverage
+    assert cov['end'] == '2026-09-16T00:00:00Z'
+    assert set(cov['end_by_source'].values()) == {'2026-09-16T00:00:00Z'}
+    # Before the forecast starts: unchanged realtime fit.
+    t_before = '2026-09-14T03:00:00Z'
+    assert m.rho(t_before, 0, 0, 400) == pytest.approx(m0.rho(t_before, 0, 0, 400), rel=1e-12)
+    # Overlap and beyond: forecast rows (twice the density), every source.
+    for t in ('2026-09-14T09:00:00Z', '2026-09-15T12:00:00Z'):
+        for src in ('baseline',) + SCENARIOS:
+            r = m.rho(t, 0, 0, 400, source=src)
+            assert r == pytest.approx(2.0 * m0.rho(t_before, 0, 0, 400, source=src), rel=1e-6)
+    assert np.isnan(m0.rho('2026-09-15T12:00:00Z', 0, 0, 400))
+
+
+def test_forecast_run_id_mismatch_warns(rho_realtime_dict):
+    import copy
+    rt = copy.deepcopy(rho_realtime_dict)
+    rt['meta']['run_id'] = 'run-a'
+    with pytest.warns(UserWarning, match='run_id'):
+        DragTrackDensity.from_files(rt, rho_forecast=_forecast_for(rt, 'run-b'))
+
+
+def test_forecast_missing_scenario_raises(rho_realtime_dict):
+    fc = _forecast_for(rho_realtime_dict)
+    del fc['fit']['rho_extreme']
+    with pytest.raises(KeyError, match='rho_extreme'):
+        DragTrackDensity.from_files(rho_realtime_dict, rho_forecast=fc)
+
+
+def test_forecast_altitude_grid_must_match(rho_realtime_dict):
+    fc = _forecast_for(rho_realtime_dict)
+    fc['altitude_km'] = fc['altitude_km'][:-1]
+    with pytest.raises(ValueError, match='altitude_km'):
+        DragTrackDensity.from_files(rho_realtime_dict, rho_forecast=fc)

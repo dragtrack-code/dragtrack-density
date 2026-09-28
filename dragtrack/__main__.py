@@ -62,6 +62,10 @@ def _build_parser() -> argparse.ArgumentParser:
                        help=('Path to (or URL of) dragtrack_rho_full_*.json. '
                              'Optional; adds solver history from 2014 for times '
                              'before the realtime file\'s window.'))
+    p_rho.add_argument('--rho-forecast', default=None,
+                       help=('Path to (or URL of) dragtrack_rho_forecast_*.json '
+                             'from the same run.  Optional; extends the forecast '
+                             'to the SWPC horizon (about 45 days).'))
     p_rho.add_argument('--source', default='baseline',
                        choices=('baseline',) + SCENARIOS,
                        help=('Which estimate to return.  "baseline" is the '
@@ -77,6 +81,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_info.add_argument('--rho-realtime', required=True,
                         help=('Path to (or URL of) dragtrack_rho_realtime_*.json.'))
+    p_info.add_argument('--rho-forecast', default=None,
+                        help=('Path to (or URL of) dragtrack_rho_forecast_*.json '
+                              '(optional).'))
     p_info.add_argument('--json', action='store_true',
                         help='Print the raw meta block as JSON.')
 
@@ -84,7 +91,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_rho(args) -> int:
-    m = DragTrackDensity.from_files(args.rho_realtime, args.rho_full)
+    m = DragTrackDensity.from_files(args.rho_realtime, args.rho_full,
+                                    rho_forecast=args.rho_forecast)
     r = m.rho(args.time, args.lat, args.lon, args.alt, source=args.source)
     if args.json:
         out = {
@@ -100,7 +108,7 @@ def _cmd_rho(args) -> int:
 
 
 def _cmd_info(args) -> int:
-    m = DragTrackDensity.from_files(args.rho_realtime)
+    m = DragTrackDensity.from_files(args.rho_realtime, rho_forecast=args.rho_forecast)
     if args.json:
         json.dump(m.meta, sys.stdout, indent=2, default=str)
         sys.stdout.write('\n')
