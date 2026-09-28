@@ -162,17 +162,33 @@ system can go straight into `rho()`.
 
 ## Satellite drag data
 
+`load_sats` reads either file into `{norad_id: record}`, with the product's
+field names; daily values are float arrays (null -> NaN) and `date` gives
+the UTC day of each.
+
+Any LEO object, from `leo_sats`:
+
 ```python
 from dragtrack import load_sats
 
-sats = load_sats(f'{BASE}/leo_sats.json')     # or stable_sats.json
-s = sats[25544]                                 # by NORAD ID
-s['date']                  # UTC day of each value (datetime64[D])
-s['bc_inv_m2_per_kg']      # daily Cd·A/m, NaN where not available
+leo = load_sats(f'{BASE}/leo_sats.json')
+iss = leo[25544]                   # by NORAD ID
+iss['date']                        # UTC day of each value (datetime64[D])
+iss['bc_inv_m2_per_kg']            # daily Cd·A/m (m^2/kg), NaN where not available
+iss['rho']                         # density along its orbit, each day (kg/m^3)
 ```
 
-`load_sats` returns `{norad_id: record}` with the product's field names;
-daily values are float arrays (null -> NaN).
+The satellites behind the density solution, from `stable_sats`:
+
+```python
+import numpy as np
+
+stable = load_sats(f'{BASE}/stable_sats.json')
+for norad, s in stable.items():
+    print(norad, s['name'], f"{np.nanmedian(s['alt_mean_km']):.0f} km",
+          f"BC {np.nanmedian(s['bc_inv_m2_per_kg']):.4f} m^2/kg",
+          f"fit rmspe {s['rmspe']:.3f}")
+```
 
 ## Command line
 
@@ -181,14 +197,3 @@ python -m dragtrack rho <time> <lat> <lon> <alt> --rho-realtime PATH_OR_URL \
     [--rho-full PATH_OR_URL] [--source NAME] [--json]
 python -m dragtrack info --rho-realtime PATH_OR_URL
 ```
-
-## References
-
-* Gershman (2026), *Enabling Near-Real-Time Thermospheric Density
-  Monitoring*, NASA-TM/20260006171.
-* Jacchia, L.G. (1970), *New Static Models of the Thermosphere and
-  Exosphere with Empirical Temperature Profiles*, SAO Special Report 313.
-* Picone, J. M., J. T. Emmert, and J. L. Lean (2005), *Thermospheric
-  densities derived from spacecraft orbits: Accurate processing of
-  two-line element sets*, J. Geophys. Res., 110, A03301,
-  doi:10.1029/2004JA010585.
