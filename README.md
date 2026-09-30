@@ -23,7 +23,7 @@ SWPC/NCEI, NASA SPDF (OMNI2) and GFZ Potsdam.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.13-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.14-py3-none-any.whl
 ```
 
 Python >= 3.9, numpy >= 1.21.  Not on PyPI.
@@ -53,11 +53,11 @@ Times are UTC.
 The data files and this package are versioned separately:
 
 * **Data schema**: `meta.schema_version` in every file (currently
-  `0.10.2`), also the `vX.Y.Z` in the dated file names.  It is the release
+  `0.10.3`), also the `vX.Y.Z` in the dated file names.  It is the release
   of the DragTrack solver that wrote the files.
-* **Package**: `dragtrack.__version__` (this is `0.6.13`).
+* **Package**: `dragtrack.__version__` (this is `0.6.14`).
 
-`dragtrack` 0.6.13 reads data schema 0.10.x (0.10.0 or later; older files
+`dragtrack` 0.6.14 reads data schema 0.10.x (0.10.0 or later; older files
 raise an error asking for a current file).  `python -m dragtrack info`
 shows a file's `schema_version`.
 
@@ -77,9 +77,7 @@ shows a file's `schema_version`.
   `rho_400 = a·S + b·G(t − t0) + c` on the recent solver values, driven by
   solar EUV (`S`) and geomagnetic activity (`G`).  `rho_fit` uses the
   measured drivers and extends past the last solver value;
-  `rho_<scenario>` holds G at fixed levels.  Past the last solver value the
-  fit (and every scenario) is level-anchored: scaled to match the solver
-  over the last 3 days of the fit window (`fit.params.anchor_scale`).
+  `rho_<scenario>` holds G at fixed levels.
 
 `rho_realtime` covers the recent window (`meta.window_days`) plus the
 forecast; `rho_full` covers 2014 to the last solver value.  Use both for a
@@ -99,8 +97,10 @@ are in `meta.provenance`.
 The forecast is calibrated for integrated (time-averaged) density, so use
 the values as they are:
 
-* the same level anchor as `rho_realtime` (`fit.params.anchor_scale`), so
-  the two files join without a step;
+* a level anchor: the fit and every scenario are scaled to match the solver
+  over the last 3 days of the fit window (`fit.params.anchor_scale`), so the
+  forecast starts off the `rho_realtime` fit by that factor (a small step
+  where `rho_forecast` takes over; `rho_realtime` itself is not adjusted);
 * SWPC's 27-day and 45-day daily Ap are raised by 0.85 in Kp before they are
   converted to G (`meta.conventions.swpc_adjustment`,
   `meta.provenance.data_sources.swpc_forecast.Ap_Kp_raise`), because SWPC's
