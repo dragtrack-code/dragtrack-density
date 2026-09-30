@@ -14,4 +14,4 @@ from .sats import load_sats
 
 __all__ = ['DragTrackDensity', 'SCENARIOS', 'load_sats', '__version__']
 
-__version__ = '0.6.10'
+__version__ = '0.6.11'
