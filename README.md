@@ -23,7 +23,7 @@ SWPC/NCEI, NASA SPDF (OMNI2) and GFZ Potsdam.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.10-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.11-py3-none-any.whl
 ```
 
 Python >= 3.9, numpy >= 1.21.  Not on PyPI.
@@ -55,9 +55,9 @@ The data files and this package are versioned separately:
 * **Data schema**: `meta.schema_version` in every file (currently
   `0.10.1`), also the `vX.Y.Z` in the dated file names.  It is the release
   of the DragTrack solver that wrote the files.
-* **Package**: `dragtrack.__version__` (this is `0.6.10`).
+* **Package**: `dragtrack.__version__` (this is `0.6.11`).
 
-`dragtrack` 0.6.10 reads data schema 0.10.x (0.10.0 or later; older files
+`dragtrack` 0.6.11 reads data schema 0.10.x (0.10.0 or later; older files
 raise an error asking for a current file).  `python -m dragtrack info`
 shows a file's `schema_version`.
 
