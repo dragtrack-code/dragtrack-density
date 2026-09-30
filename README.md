@@ -30,11 +30,11 @@ Python >= 3.9, numpy >= 1.21.  Not on PyPI.
 
 ## The data products
 
-Four JSON files in `latest/` on the
+Four JSON files and a Parquet history in `latest/` on the
 [Hugging Face dataset](https://huggingface.co/datasets/djgersh/dragtrack-density-data),
-regenerated together after each solver update and sharing one
-`meta.run_id`.  Earlier versions are kept in dated directories, listed in
-`manifest.json`.
+regenerated together after each solver update.  The JSON files share one
+`meta.run_id`; earlier versions of them are kept in dated directories,
+listed in `manifest.json`.  The history is in `latest/` only.
 
 | File | Contents |
 |---|---|
@@ -42,9 +42,24 @@ regenerated together after each solver update and sharing one
 | `rho_full.json` | Global density: every solver value since 2014 |
 | `rho_forecast.json` | Global density: the `rho_realtime` fit continued to about 45 days ahead with the NOAA SWPC forecasts |
 | `leo_sats.json` | Daily drag data for every LEO object with measurable drag, flagging the satellites the density solver uses |
+| `leo_sats_history/leo_sats_history_<YYYY>.parquet` | The `leo_sats` daily values for every object that ever qualified, one file per year from 2014 |
 
-Each file defines its fields, units and conventions in its `meta` block.
+Each file defines its fields, units and conventions in its `meta` block
+(for the Parquet files, the `dragtrack_meta` key of the file metadata).
 Times are UTC.
+
+### Versions
+
+The data files and this package are versioned separately:
+
+* **Data schema**: `meta.schema_version` in every file (currently
+  `0.10.1`), also the `vX.Y.Z` in the dated file names.  It is the release
+  of the DragTrack solver that wrote the files.
+* **Package**: `dragtrack.__version__` (this is `0.6.10`).
+
+`dragtrack` 0.6.10 reads data schema 0.10.x (0.10.0 or later; older files
+raise an error asking for a current file).  `python -m dragtrack info`
+shows a file's `schema_version`.
 
 ### rho_realtime and rho_full: density
 
@@ -87,7 +102,9 @@ axis:
 * orbit: `sma_km`, `eccentricity`, `perigee_km`, `apogee_km`,
   `alt_mean_km`, `inc_deg`, `raan_deg`, `v`, `n_tle`;
 * drag: `vdot` (TLE-derived in-track drag deceleration) and `sigma_vdot`;
-* `rho`: the density product averaged along the object's orbit;
+* `rho`: the density product averaged along the object's orbit over the
+  same interval as `vdot` (from the previous TLE epoch to this one), so
+  `rho` and `vdot` describe the same stretch of flight;
 * `bc_inv_m2_per_kg`: inverse ballistic coefficient `Cd·A/m` from
   `vdot = ½·(Cd·A/m)·rho·v²`, and `sigma_bc_inv_m2_per_kg`;
 * `stable`: true for the satellites the density solver used;
@@ -95,6 +112,30 @@ axis:
 
 The file holds every LEO object whose drag is measurable plus every
 satellite the solver used; the selection is in `meta.selection`.
+
+### leo_sats_history: full drag history
+
+The `leo_sats` daily values for every object that passed the `leo_sats`
+selection in any 27-day window since 2014-01-01 (fixed window grid), one
+Parquet file per year, one row per object per UTC day.  Columns:
+`norad_id`, `date`, `name`, the orbit and drag fields of `leo_sats`
+(`eccentricity`, `sma_km`, `apogee_km`, `perigee_km`, `alt_mean_km`,
+`n_tle`, `v`, `vdot`, `sigma_vdot`, `rho`, `bc_inv_m2_per_kg`,
+`sigma_bc_inv_m2_per_kg`) and the window's `inc_deg`, `raan_deg` and
+`rmspe`.  There is no `stable` flag.  Every row equals what a `leo_sats`
+file for that window reports.  Each solver update recomputes the last
+54 days.
+
+```python
+import json
+import pandas as pd
+import pyarrow.parquet as pq
+
+f = 'leo_sats_history_2024.parquet'          # downloaded from latest/leo_sats_history/
+df = pd.read_parquet(f)
+iss = df[df.norad_id == 25544].sort_values('date')
+meta = json.loads(pq.read_schema(f).metadata[b'dragtrack_meta'])   # units, selection, schema_version
+```
 
 ## Density at a point
 
