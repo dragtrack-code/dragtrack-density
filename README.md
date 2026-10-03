@@ -53,7 +53,7 @@ Times are UTC.
 The data files and this package are versioned separately:
 
 * **Data schema**: `meta.schema_version` in every file (currently
-  `0.10.3`), also the `vX.Y.Z` in the dated file names.  It is the release
+  `0.10.5`), also the `vX.Y.Z` in the dated file names.  It is the release
   of the DragTrack solver that wrote the files.
 * **Package**: `dragtrack.__version__` (this is `0.6.14`).
 
