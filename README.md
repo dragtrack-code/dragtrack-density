@@ -23,7 +23,7 @@ SWPC/NCEI, NASA SPDF (OMNI2) and GFZ Potsdam.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.15-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.16-py3-none-any.whl
 ```
 
 Python >= 3.9, numpy >= 1.21.  Not on PyPI.
@@ -53,11 +53,11 @@ Times are UTC.
 The data files and this package are versioned separately:
 
 * **Data schema**: `meta.schema_version` in every file (currently
-  `0.10.6`), also the `vX.Y.Z` in the dated file names.  It is the release
+  `0.10.7`), also the `vX.Y.Z` in the dated file names.  It is the release
   of the DragTrack solver that wrote the files.
-* **Package**: `dragtrack.__version__` (this is `0.6.15`).
+* **Package**: `dragtrack.__version__` (this is `0.6.16`).
 
-`dragtrack` 0.6.15 reads data schema 0.10.x (0.10.0 or later; older files
+`dragtrack` 0.6.16 reads data schema 0.10.x (0.10.0 or later; older files
 raise an error asking for a current file).  `python -m dragtrack info`
 shows a file's `schema_version`.
 
@@ -98,10 +98,11 @@ The forecast is calibrated for integrated (time-averaged) density, so use
 the values as they are:
 
 * a seasonal factor: every row (the fit and every scenario) is multiplied by
-  `s(doy_t)/s(doy_ref)`, the annual and semiannual density cycle (low in
-  early July, high in early April and early November; constants in
-  `meta.provenance.season_factor`, reference time `fit.params.season_ref_utc`
-  = the middle of the 27-day fit window), which the fit itself cannot see.
+  `s(doy_t)/s_ref`, the annual and semiannual density cycle (low in early
+  July, high in early April and early November; constants in
+  `meta.provenance.season_factor`; `ln s_ref` = the mean of `ln s` over the
+  fit's solver nodes, `fit.params.season_ref_ln_s`), which the fit itself
+  cannot see.
   `rho_realtime` is not adjusted, so the forecast starts off the
   `rho_realtime` fit by the factor at that point;
 * SWPC's 27-day and 45-day daily Ap are raised by 0.85 in Kp before they are
