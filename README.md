@@ -53,7 +53,7 @@ Times are UTC.
 The data files and this package are versioned separately:
 
 * **Data schema**: `meta.schema_version` in every file (currently
-  `0.10.5`), also the `vX.Y.Z` in the dated file names.  It is the release
+  `0.10.6`), also the `vX.Y.Z` in the dated file names.  It is the release
   of the DragTrack solver that wrote the files.
 * **Package**: `dragtrack.__version__` (this is `0.6.14`).
 
@@ -97,20 +97,23 @@ are in `meta.provenance`.
 The forecast is calibrated for integrated (time-averaged) density, so use
 the values as they are:
 
-* a level anchor: the fit and every scenario are scaled to match the solver
-  over the last 3 days of the fit window (`fit.params.anchor_scale`), so the
-  forecast starts off the `rho_realtime` fit by that factor (a small step
-  where `rho_forecast` takes over; `rho_realtime` itself is not adjusted);
+* a seasonal factor: every row (the fit and every scenario) is multiplied by
+  `s(doy_t)/s(doy_ref)`, the annual and semiannual density cycle (low in
+  early July, high in early April and early November; constants in
+  `meta.provenance.season_factor`, reference time `fit.params.season_ref_utc`
+  = the middle of the 27-day fit window), which the fit itself cannot see.
+  `rho_realtime` is not adjusted, so the forecast starts off the
+  `rho_realtime` fit by the factor at that point;
 * SWPC's 27-day and 45-day daily Ap are raised by 0.85 in Kp before they are
   converted to G (`meta.conventions.swpc_adjustment`,
   `meta.provenance.data_sources.swpc_forecast.Ap_Kp_raise`), because SWPC's
   daily Ap misses storms and would leave G, and the density, low on average;
   F10.7 and the 3-day Kp are used as issued.
 
-In a replay of 86 archived SWPC forecasts (2020–2026) against the solver
-reanalysis this brought the mean error of density integrated over 7–45 days
-to about ±1% at 200–300 km and cut its RMS by 10–18%.  These files carry
-`fit.params.anchor_scale`; files without it predate the calibration.
+In a replay of 87 archived SWPC forecasts (2020–2026) against the solver
+reanalysis, the mean error of density integrated over 7–45 days is within
+about ±1% at 250–300 km, and its RMS at 300 km is 9% (14.7% for the fit
+alone at 45 days).
 
 ### leo_sats: satellite drag data
 
