@@ -23,10 +23,15 @@ SWPC/NCEI, NASA SPDF (OMNI2) and GFZ Potsdam.
 ## Install
 
 ```bash
-pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.6.16-py3-none-any.whl
+pip install https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.7.0-py3-none-any.whl
 ```
 
-Python >= 3.9, numpy >= 1.21.  Not on PyPI.
+Python >= 3.9, numpy >= 1.21.  Not on PyPI.  For the plots (below), add the `plots` extra, which installs plotly
+and kaleido:
+
+```bash
+pip install "dragtrack[plots] @ https://huggingface.co/datasets/djgersh/dragtrack-density-data/resolve/main/latest/dragtrack-0.7.0-py3-none-any.whl"
+```
 
 ## The data products
 
@@ -244,10 +249,28 @@ for norad, s in stable.items():
           f"fit rmspe {s['rmspe']:.3f}")
 ```
 
+## Plots
+
+The density at one altitude vs time, as on the DragTrack website: the solver values with their uncertainty, the
+realtime fit and its scenarios, the forecast if given, the solver's data-cadence strip, the latitude-averaged
+density / its global mean vs local solar time, the local-time-averaged one vs latitude, and the S and G drivers.
+Needs the `plots` extra.
+
+```python
+from dragtrack.plots import atmosphere_figure, save_png
+
+fig = atmosphere_figure('dragtrack_rho_realtime_<...>.json',
+                        'dragtrack_rho_forecast_<...>.json',   # optional, same run
+                        alt_km=400)                            # geodetic, any altitude in the grid
+fig.show()                       # interactive (plotly)
+save_png(fig, 'rho_400km.png')   # PNG (kaleido)
+```
+
 ## Command line
 
 ```
 python -m dragtrack rho <time> <lat> <lon> <alt> --rho-realtime PATH_OR_URL \
     [--rho-full PATH_OR_URL] [--rho-forecast PATH_OR_URL] [--source NAME] [--json]
 python -m dragtrack info --rho-realtime PATH_OR_URL [--rho-forecast PATH_OR_URL]
+python -m dragtrack plot --rho-realtime PATH_OR_URL [--rho-forecast PATH_OR_URL] [--alt 400] -o OUT.png
 ```
