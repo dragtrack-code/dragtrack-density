@@ -18,6 +18,11 @@ Show what a JSON contains::
 
     python -m dragtrack info --rho-realtime path/to/dragtrack_rho_realtime.json
 
+Plot the density at 400 km with the forecast (needs ``pip install 'dragtrack[plots]'``)::
+
+    python -m dragtrack plot --rho-realtime path/to/dragtrack_rho_realtime.json \
+        --rho-forecast path/to/dragtrack_rho_forecast.json --alt 400 -o rho.png
+
 Paths may be local files or HTTP(S) URLs.
 """
 from __future__ import annotations
@@ -87,7 +92,27 @@ def _build_parser() -> argparse.ArgumentParser:
     p_info.add_argument('--json', action='store_true',
                         help='Print the raw meta block as JSON.')
 
+    p_plot = sub.add_parser(
+        'plot',
+        help='Write a PNG of the density vs time at one altitude (needs dragtrack[plots]).',
+    )
+    p_plot.add_argument('--rho-realtime', required=True,
+                        help='Path to (or URL of) dragtrack_rho_realtime_*.json.')
+    p_plot.add_argument('--rho-forecast', default=None,
+                        help=('Path to (or URL of) dragtrack_rho_forecast_*.json from the same run '
+                              '(optional; added after the realtime fit).'))
+    p_plot.add_argument('--alt', type=float, default=400.0,
+                        help='Geodetic altitude in km.  Default: 400.')
+    p_plot.add_argument('-o', '--out', required=True, help='Output PNG path.')
+
     return p
+
+
+def _cmd_plot(args) -> int:
+    from .plots import atmosphere_figure, save_png
+    fig = atmosphere_figure(args.rho_realtime, args.rho_forecast, alt_km=args.alt)
+    sys.stdout.write(f'{save_png(fig, args.out)}\n')
+    return 0
 
 
 def _cmd_rho(args) -> int:
@@ -135,6 +160,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_rho(args)
     if args.cmd == 'info':
         return _cmd_info(args)
+    if args.cmd == 'plot':
+        return _cmd_plot(args)
     return 2
 
 
