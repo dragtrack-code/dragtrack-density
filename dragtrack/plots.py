@@ -227,6 +227,7 @@ def _build(d: dict, alt_sel: float, now: datetime):
     go, make_subplots = _plotly()
     j70 = _j70()
     _has_spatial = bool(d.get("spatial"))
+    g_unit = ((d.get("meta") or {}).get("units") or {}).get("fit.G") or "nT"   # products without a recorded unit: nT
     alts = np.array(d["altitude_km"], dtype=float)
     alt_label = f"{alt_sel:.0f}"
 
@@ -413,14 +414,14 @@ def _build(d: dict, alt_sel: float, now: datetime):
     fig.add_trace(go.Scatter(x=t_fit, y=np.where(g_solid_mask, G_fit, np.nan),
                              mode="lines", line=dict(color="mediumpurple", width=2),
                              showlegend=False,
-                             hovertemplate="%{x|%Y-%m-%d %H:%M}<br>G=%{y:.2f} nT<extra></extra>"),
+                             hovertemplate="%{x|%Y-%m-%d %H:%M}<br>G=%{y:.2f} " + g_unit + "<extra></extra>"),
                   row=_row["G"], col=1)
     if g_dash_mask.any():
         fig.add_trace(go.Scatter(x=t_fit, y=np.where(g_dash_mask, G_fit, np.nan),
                                  mode="lines",
                                  line=dict(color="mediumpurple", width=2, dash="dash"),
                                  showlegend=False,
-                                 hovertemplate="%{x|%Y-%m-%d %H:%M}<br>G=%{y:.2f} nT<extra></extra>"),
+                                 hovertemplate="%{x|%Y-%m-%d %H:%M}<br>G=%{y:.2f} " + g_unit + "<extra></extra>"),
                       row=_row["G"], col=1)  # dashed forecast tail
 
     # "Now" = when the figure is drawn (UTC), after the product's reference time.
@@ -650,7 +651,7 @@ def _build(d: dict, alt_sel: float, now: datetime):
     fig.update_yaxes(title="ρ (kg/m³)", type="log", exponentformat="power", dtick=0.25,
                      range=y1_range, **ax, row=_row["rho"], col=1)
     fig.update_yaxes(title="S (mW/m²)", **ax, row=_row["S"], col=1)
-    fig.update_yaxes(title="G (nT)",    **ax, row=_row["G"], col=1)
+    fig.update_yaxes(title=f"G ({g_unit})", **ax, row=_row["G"], col=1)
     if _has_spatial:
         fig.update_yaxes(title="LST (h)", range=[0, 24], dtick=6,
                          **ax, row=_row["hm_lat"], col=1)
